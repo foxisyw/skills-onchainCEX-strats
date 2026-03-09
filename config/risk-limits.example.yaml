@@ -1,0 +1,149 @@
+# ============================================================
+# Onchain x CEX Strats — Risk Limits Configuration
+# ============================================================
+#
+# Copy this file to risk-limits.yaml and customize the values
+# to match your risk tolerance and capital.
+#
+#   cp risk-limits.example.yaml risk-limits.yaml
+#
+# All monetary values are in USD unless otherwise noted.
+# All percentage values are expressed as plain numbers (2.0 = 2%).
+# ============================================================
+
+# ----------------------------------------------------------
+# Global defaults — apply to ALL strategies unless overridden
+# ----------------------------------------------------------
+global:
+  # Position sizing
+  max_position_size_usd: 500          # Maximum single trade / position size
+  max_total_exposure_usd: 2000        # Sum of all open positions across all strategies
+  max_concurrent_positions: 5         # Maximum number of simultaneous open positions
+  max_leverage: 3                     # Hard cap on leverage across all strategies
+
+  # Loss limits
+  max_loss_per_trade_pct: 2.0         # Stop-loss trigger as % of position value
+  max_loss_per_day_usd: 100           # Daily circuit breaker — halt all trading if hit
+
+  # Data quality
+  data_staleness_max_sec: 60          # Reject price data older than 60s (general)
+  data_staleness_arb_sec: 5           # Stricter staleness limit for arbitrage strategies
+
+  # Liquidity & execution
+  min_liquidity_usd: 100000           # Minimum pool / orderbook liquidity to trade
+  max_slippage_bps: 150               # 1.5% maximum acceptable slippage (150 basis points)
+  max_gas_pct_of_trade: 2.0           # On-chain gas cost must be < 2% of trade value
+
+  # Operating mode
+  default_mode: "demo"                # "demo" or "live" — ALWAYS start with demo
+
+
+# ----------------------------------------------------------
+# Per-strategy overrides
+# Values here take precedence over global defaults.
+# ----------------------------------------------------------
+strategies:
+
+  # ========================================
+  # CEX-DEX Arbitrage
+  # ========================================
+  cex_dex_arbitrage:
+    max_position_size_usd: 2000
+    max_concurrent_positions: 3
+
+    # Spread thresholds
+    min_spread_bps: 50                # Minimum observed spread to consider (50 bps = 0.5%)
+    min_net_profit_usd: 5.0           # Trade must clear at least $5 net after fees + gas
+    abort_if_spread_narrows_below_bps: 20  # Abort if spread shrinks below 20 bps during execution
+
+    # Timing
+    max_position_duration_min: 30     # Force-close positions open longer than 30 min
+
+  # ========================================
+  # Funding Rate Arbitrage
+  # ========================================
+  funding_rate_arbitrage:
+    max_position_size_usd: 5000
+    max_leverage: 2                   # Lower leverage for longer holding periods
+
+    # Yield thresholds
+    min_annualized_pct: 10            # 10% annualized minimum to enter
+    warn_if_breakeven_days_gt: 30     # Warn if breakeven horizon exceeds 30 days
+
+    # Position management
+    max_hold_days_without_review: 7   # Force manual review after 7 days
+    unwind_if_funding_flips_sign: true  # Auto-unwind if funding rate flips direction
+
+  # ========================================
+  # Basis Trading (Spot vs. Futures)
+  # ========================================
+  basis_trading:
+    max_position_size_usd: 10000
+    max_leverage: 1                   # Fully collateralized only — no margin
+
+    # Contract requirements
+    min_days_to_expiry: 14            # Only trade futures with >= 14 days to expiry
+
+    # Yield thresholds
+    min_annualized_yield_pct: 5       # Minimum 5% annualized yield to enter
+
+  # ========================================
+  # Yield Optimizer (DeFi yield rotation)
+  # ========================================
+  yield_optimizer:
+    # Diversification
+    max_protocol_allocation_pct: 25   # Max 25% of capital in a single DeFi protocol
+
+    # Protocol quality
+    min_protocol_tvl_usd: 10000000    # $10M minimum TVL — avoid small/untested protocols
+    reject_unaudited_contracts: true  # Block protocols without a public audit report
+
+    # Switching logic
+    min_switching_benefit_pct: 0.5    # Must gain >= 0.5% APY improvement to justify a switch
+
+  # ========================================
+  # Smart Money Tracker (copy trading signals)
+  # ========================================
+  smart_money_tracker:
+    max_copy_size_usd: 1000           # Maximum size per copied trade
+
+    # Signal freshness
+    signal_max_age_min: 30            # Reject signals older than 30 minutes
+
+    # Human oversight
+    require_human_approval: true      # ALWAYS require human approval — never auto-execute
+
+    # Wallet quality filter
+    min_wallet_pnl_usd: 100000        # Only follow wallets with > $100K realized PnL
+
+
+# ----------------------------------------------------------
+# Security checks — pre-trade safety gates
+# ----------------------------------------------------------
+security:
+
+  # GoPlus Security (required — free tier)
+  goplus:
+    # Hard blocks — trade will be rejected
+    block_honeypot: true              # Block tokens identified as honeypots
+    block_buy_tax_above_pct: 5        # Block if buy tax > 5%
+    block_sell_tax_above_pct: 10      # Block if sell tax > 10%
+    block_holder_concentration_above_pct: 80  # Block if top holders own > 80%
+    block_unverified_contracts: true   # Block tokens with unverified source code
+
+    # Soft warnings — trade proceeds but user is alerted
+    warn_holder_concentration_above_pct: 50   # Warn if top holders own > 50%
+    warn_proxy_contracts: true         # Warn if contract uses upgradeable proxy pattern
+
+    # Contract maturity
+    min_contract_age_hours: 24         # Block contracts deployed less than 24 hours ago
+
+  # MistTrack (optional — paid API from SlowMist)
+  misttrack:
+    enabled: false                    # Set to true if you have a MistTrack API key
+    block_high_risk_addresses: true   # Block transactions involving high-risk addresses
+
+  # Chainalysis (optional — free sanctions screening API)
+  chainalysis:
+    enabled: false                    # Set to true if you have a Chainalysis API key
+    block_sanctioned_addresses: true  # Block transactions involving OFAC-sanctioned addresses
