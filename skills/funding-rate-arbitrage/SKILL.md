@@ -69,7 +69,7 @@ Metric labels may use English abbreviations regardless of language:
 | Mode display | Every output header shows `[DEMO]` or `[LIVE]` |
 | Read-only | This skill performs **zero** write operations -- no trades, no transfers |
 | Recommendation header | Always show `[RECOMMENDATION ONLY -- 不會自動執行]` |
-| Live switch | Requires explicit user confirmation per protocol in `references/safety-checks.md` |
+| Live switch | Requires explicit user confirmation (see Account Safety Protocol in Section 10) |
 
 Even in `[LIVE]` mode, this skill only reads market data. There is no risk of accidental execution.
 
@@ -472,7 +472,6 @@ Parse user message to extract:
 
 4. market_get_candles(instId: "{ASSET}-USDT-SWAP", bar: "8H", limit: "21")
    -> Historical funding rate proxied from candle data (for trend analysis)
-   -> Note: Use funding rate history from account_get_bills type=8 if available
 
 5. profitability-calculator.estimate (internal call)
    -> TradeLeg[]: spot buy + perp short
@@ -485,28 +484,36 @@ Parse user message to extract:
 
 #### Annualized Funding Rate
 
-> Reference: `references/formulas.md` Section 3 -- Annualized Funding Rate
-
 ```
-annualized_pct = parseFloat(funding_rate_per_8h) * 3 * 365 * 100
+annualized_funding = funding_rate_per_8h * 3 * 365
 
-Example:
-  funding_rate_per_8h = "0.000150"  (0.015% per 8h)
-  annualized_pct = 0.000150 * 3 * 365 * 100
-                 = 16.43%
+Variable Definitions:
+  funding_rate_per_8h  = Single funding payment rate (e.g., 0.01% = 0.0001)
+  3                    = Funding payments per day (every 8 hours)
+  365                  = Days per year
+
+Worked Example:
+  funding_rate_per_8h = 0.0150%  (= 0.000150)
+  annualized_funding = 0.000150 * 3 * 365
+                     = 0.16425
+                     = 16.43%
+
+Caveats:
+  - Funding rates are variable and reset every 8h; annualization assumes constant rate.
+  - Use a rolling average (e.g., 7-day) for more stable projections.
+  - Negative funding means shorts pay longs; positive means longs pay shorts.
 ```
 
 #### Daily Income
 
-> Reference: `references/formulas.md` Section 3 -- Daily Income Projection
-
 ```
-daily_income = size_usd * parseFloat(funding_rate_per_8h) * 3
+daily_income = position_size * funding_rate_per_8h * 3
 
-Example:
-  size_usd = 10,000
-  funding_rate_per_8h = 0.000150
-  daily_income = 10000 * 0.000150 * 3 = $4.50
+Worked Example:
+  position_size = $100,000
+  funding_rate_per_8h = 0.0150%  (= 0.000150)
+  daily_income = 100000 * 0.000150 * 3
+               = $45.00
 ```
 
 #### Estimated Daily Income per $10,000
@@ -517,12 +524,10 @@ estimated_daily_income_per_10k = 10000 * parseFloat(funding_rate_per_8h) * 3
 
 #### Entry/Exit Cost Calculation
 
-> Reference: `references/fee-schedule.md` Section 7, Pattern B: Funding Harvest
-
 ```
 Entry:
-  spot_buy_fee    = size_usd * spot_taker_rate  (fee-schedule.md)
-  perp_short_fee  = size_usd * swap_taker_rate  (fee-schedule.md)
+  spot_buy_fee    = size_usd * spot_taker_rate
+  perp_short_fee  = size_usd * swap_taker_rate
   spot_slippage   = estimated from orderbook or benchmark (~1 bps)
   perp_slippage   = estimated from orderbook or benchmark (~1 bps)
   total_entry     = spot_buy_fee + perp_short_fee + spot_slippage + perp_slippage
@@ -531,44 +536,88 @@ Exit (symmetric):
   total_exit = total_entry  (same legs, reversed)
 
 Total round-trip = total_entry + total_exit
+```
 
-Example (VIP1, $50,000):
-  spot_buy_fee    = 50000 * 0.0007  = $35.00
-  perp_short_fee  = 50000 * 0.00045 = $22.50
-  spot_slippage   = 50000 * 1/10000 = $5.00
-  perp_slippage   = 50000 * 1/10000 = $5.00
-  total_entry     = $67.50
-  total_exit      = $67.50
-  total_roundtrip = $135.00
+**Fee rates by VIP tier (for this calculation):**
+
+| Tier | Spot Taker | Swap Taker |
+|------|-----------|-----------|
+| VIP0 | 0.080% | 0.050% |
+| VIP1 | 0.070% | 0.045% |
+| VIP2 | 0.060% | 0.040% |
+| VIP3 | 0.050% | 0.035% |
+| VIP4 | 0.040% | 0.030% |
+| VIP5 | 0.035% | 0.025% |
+
+**Worked Example (VIP1, $50,000):**
+```
+spot_buy_fee    = 50000 * 0.0007  = $35.00
+perp_short_fee  = 50000 * 0.00045 = $22.50
+spot_slippage   = 50000 * 1/10000 = $5.00
+perp_slippage   = 50000 * 1/10000 = $5.00
+total_entry     = $67.50
+total_exit      = $67.50
+total_roundtrip = $135.00
+```
+
+**Pattern B: Funding Harvest Cost Template (VIP1, $100,000):**
+```
+Position size: $100,000
+
+Spot buy (VIP1 taker):        $70.00  (7.0 bps)
+Perp short (VIP1 taker):      $45.00  (4.5 bps)
+                               ------
+Entry cost:                   $115.00  (11.5 bps)
+Exit cost (same):             $115.00  (11.5 bps)
+Round-trip:                   $230.00  (23.0 bps)
 ```
 
 #### Break-Even Holding Period
 
-> Reference: `references/formulas.md` Section 3 -- Break-Even Holding Period
-
 ```
-break_even_days = total_roundtrip / daily_income
+break_even_days = (entry_cost + exit_cost) / daily_income
+               = total_roundtrip / daily_income
 
-Example:
-  total_roundtrip = $135.00
-  daily_income    = $22.50
-  break_even_days = 135 / 22.50 = 6.0 days
+Variable Definitions:
+  entry_cost   = Total cost to enter the position (CEX fees + slippage)
+  exit_cost    = Total cost to exit the position
+  daily_income = Projected daily income from funding
+
+Worked Example:
+  entry_cost = $80.00
+  exit_cost  = $80.00
+  daily_income = $45.00
+  break_even_days = (80 + 80) / 45
+                  = 3.56 days
+
+Caveats:
+  - If funding rate drops or flips, break-even extends.
+  - Monitor funding rate trend — declining trend suggests exiting before break-even may be optimal.
 ```
 
 #### Net Carry (Annualized)
-
-> Reference: `references/formulas.md` Section 3 -- Net Carry
 
 ```
 net_carry = annualized_funding - borrow_rate - annualized_trading_fees
 
 annualized_trading_fees = (total_roundtrip / size_usd) * (365 / hold_days) * 100
 
-Example:
+Variable Definitions:
+  annualized_funding       = Expected annualized funding income
+  borrow_rate              = Annualized cost of borrowing margin (if applicable)
+  annualized_trading_fees  = Entry + exit fee annualized
+
+Worked Example:
   annualized_funding = 16.43%
-  borrow_rate = 0% (own capital)
-  annualized_trading_fees = (135 / 50000) * (365 / 30) * 100 = 3.29%
-  net_carry = 16.43% - 0% - 3.29% = 13.14%
+  borrow_rate = 5.00%  (USDT borrow on OKX)
+  annualized_trading_fees = 0.14%  (VIP1 taker round-trip: 0.07% * 2)
+  net_carry = 16.43% - 5.00% - 0.14%
+            = 11.29%
+
+Caveats:
+  - Borrow rate may be zero if using own capital with no margin borrowing.
+  - For delta-neutral funding harvest (spot long + perp short), no directional risk
+    but still exposed to funding rate flipping negative.
 ```
 
 #### Scenario Generation (for carry-pnl)
@@ -588,10 +637,10 @@ For each scenario:
 
 ### Step 4: Format Output & Suggest Next Steps
 
-Use output templates from `references/output-templates.md`:
+Use output templates (see Section 13):
 
-- **Header:** Global Header Template (skill icon: Clock) with mode
-- **Body:** Funding Rate Display Template (Section 10) or scan results table
+- **Header:** Global Header Template with mode
+- **Body:** Funding Rate Display Template or scan results table
 - **Footer:** Next Steps Template
 
 Suggested follow-up actions (vary by result):
@@ -607,47 +656,16 @@ Suggested follow-up actions (vary by result):
 
 ## 9. Key Formulas
 
-All formulas are canonical. For full derivations and worked examples, see `references/formulas.md` Section 3.
+All formulas are canonical with full derivations and worked examples inlined above in Section 8 Step 3.
 
-### Annualized Funding Rate
+### Quick Reference
 
-```
-annualized_funding = funding_rate_per_8h * 3 * 365
-
-Worked Example:
-  Rate: 0.0150% per 8h = 0.000150
-  Annualized: 0.000150 * 3 * 365 = 0.16425 = 16.43%
-```
-
-### Daily Income
-
-```
-daily_income = position_size * funding_rate_per_8h * 3
-
-Worked Example:
-  Position: $100,000 | Rate: 0.0150%
-  Daily: $100,000 * 0.000150 * 3 = $45.00
-```
-
-### Break-Even Holding Period
-
-```
-break_even_days = (entry_cost + exit_cost) / daily_income
-
-Worked Example:
-  Entry: $67.50 | Exit: $67.50 | Daily income: $22.50
-  Break-even: $135.00 / $22.50 = 6.0 days
-```
-
-### Net Carry
-
-```
-net_carry = annualized_funding - borrow_rate - annualized_trading_fees
-
-Worked Example:
-  Funding: 16.43% | Borrow: 5.00% | Fees: 0.14%
-  Net carry: 16.43% - 5.00% - 0.14% = 11.29%
-```
+| Formula | Expression | Example |
+|---------|-----------|---------|
+| Annualized Funding | `rate_per_8h * 3 * 365` | 0.000150 * 3 * 365 = 16.43% |
+| Daily Income | `position_size * rate_per_8h * 3` | $100K * 0.000150 * 3 = $45.00 |
+| Break-Even Days | `total_roundtrip / daily_income` | $135.00 / $22.50 = 6.0 days |
+| Net Carry | `annualized_funding - borrow_rate - ann_fees` | 16.43% - 5.00% - 0.14% = 11.29% |
 
 ### Rate Stability (Standard Deviation)
 
@@ -664,20 +682,44 @@ Interpretation:
 
 ## 10. Safety Checks
 
-> Cross-reference: `references/safety-checks.md` Section 2 -- funding-rate-arbitrage limits.
+### 10.1 Pre-Trade Safety Checklist
 
-### Hard Limits
+Every skill runs through these checks **in order** before producing a recommendation. A BLOCK at any step halts the pipeline immediately.
+
+| # | Check | Tool | BLOCK Threshold | WARN Threshold | Error Code |
+|---|-------|------|----------------|----------------|------------|
+| 1 | MCP connectivity | `system_get_capabilities` | Server not reachable | — | `MCP_NOT_CONNECTED` |
+| 2 | Authentication | `system_get_capabilities` | `authenticated: false` | — | `AUTH_FAILED` |
+| 3 | Data freshness | Internal timestamp comparison | > 60s stale | > 30s stale | `DATA_STALE` |
+| 4 | Funding settlement | Check `fundingTime` vs `now` | `fundingTime < now` (already passed) | — | `DATA_STALE` |
+
+**Check Execution Flow:**
+```
+START
+  |
+  +- Check 1-2: Infrastructure   -- BLOCK? -> Output error, STOP
+  |
+  +- Check 3: Freshness          -- BLOCK? -> Refetch data, retry once -> BLOCK? -> STOP
+  |
+  +- Check 4: Settlement timing  -- BLOCK? -> Wait for next interval refresh
+  |
+  +- ALL PASSED -> Output recommendation with any accumulated WARNs
+```
+
+**Special case for funding-rate-arbitrage:** Verify funding settlement hasn't passed (fundingTime must be in the future).
+
+### 10.2 funding-rate-arbitrage Risk Limits
 
 | Parameter | Default | Hard Cap | Description |
 |-----------|---------|----------|-------------|
 | max_trade_size | $5,000 | $50,000 | Maximum USD value per position |
 | max_leverage | 2x | 5x | Maximum leverage for the hedge leg |
 | max_concurrent_positions | 2 | 5 | Maximum simultaneous carry positions |
-| min_annualized_yield | 5% | -- | Minimum APY to recommend |
-| review_period_days | 7 | -- | Re-evaluate positions every N days |
-| max_funding_rate_std_dev | 3 | -- | Skip if historical funding volatility too high |
+| min_annualized_yield | 5% | — | Minimum APY to recommend |
+| review_period_days | 7 | — | Re-evaluate positions every N days |
+| max_funding_rate_std_dev | 3 | — | Skip if historical funding volatility too high |
 
-### BLOCK Conditions
+### 10.3 BLOCK Conditions
 
 | Condition | Action | Error Code |
 |-----------|--------|------------|
@@ -686,7 +728,7 @@ Interpretation:
 | Funding settlement already passed (fundingTime < now) | BLOCK. Wait for next interval refresh. | `DATA_STALE` |
 | MCP server unreachable | BLOCK. | `MCP_NOT_CONNECTED` |
 
-### WARN Conditions
+### 10.4 WARN Conditions
 
 | Condition | Warning | Action |
 |-----------|---------|--------|
@@ -697,6 +739,36 @@ Interpretation:
 | Annualized yield < 5% | `[WARN] 年化收益低於 5%，扣除成本後利潤空間有限` | Suggest looking at higher-yield assets. |
 | 3 consecutive intervals with flipped funding | `[WARN] 資金費率已連續 3 個區間反向，強烈建議平倉` | Recommend immediate unwind. |
 
+### 10.5 Account Safety Protocol
+
+The system defaults to **demo mode** at all times.
+
+**Demo Mode (Default):**
+- MCP server config: `okx-DEMO-simulated-trading`
+- All outputs include header: `[DEMO]`
+- No real funds at risk. No confirmation required.
+
+**Live Mode:**
+- MCP server config: `okx-LIVE-trading`
+- All outputs include header: `[LIVE]`
+- Recommendations are still analysis-only (no auto-execution)
+
+**Switching from Demo to Live:**
+```
+1. User explicitly says "live", "真實帳戶", "real account", or similar
+2. System confirms with warning and asks for "確認" or "confirm"
+3. User must reply with explicit confirmation
+4. System verifies authentication via system_get_capabilities
+5. If authenticated: switch and display [LIVE] header
+6. If NOT authenticated: show AUTH_FAILED error, remain in demo
+```
+
+**Session Rules:**
+- Default on startup: Always demo mode
+- Timeout: Revert to demo after 30 minutes idle
+- Header requirement: EVERY output must show `[DEMO]` or `[LIVE]`
+- No auto-execution: `[RECOMMENDATION ONLY]` header always present
+
 ---
 
 ## 11. Error Codes & Recovery
@@ -704,11 +776,18 @@ Interpretation:
 | Code | Condition | User Message (ZH) | User Message (EN) | Recovery |
 |------|-----------|-------------------|-------------------|----------|
 | `MCP_NOT_CONNECTED` | okx-trade-mcp unreachable | MCP 伺服器無法連線。請確認 okx-trade-mcp 是否正在運行。 | MCP server unreachable. Check if okx-trade-mcp is running. | Verify config, restart server. |
+| `AUTH_FAILED` | API key invalid or expired | API 認證失敗，請檢查 OKX API 金鑰設定 | API authentication failed. Check OKX API key configuration. | Update `~/.okx/config.toml` |
 | `INSTRUMENT_NOT_FOUND` | No SWAP instrument for the asset | 找不到 {asset} 的永續合約。請確認幣種名稱。 | No perpetual swap found for {asset}. Verify the symbol. | Suggest checking OKX supported instruments. |
 | `DATA_STALE` | Funding data timestamp expired | 資金費率數據已過期，正在重新獲取... | Funding rate data stale. Refetching... | Auto-retry once, then error. |
 | `LEVERAGE_EXCEEDED` | Requested leverage > limit | 槓桿倍數 {requested}x 超過上限 {limit}x | Leverage {requested}x exceeds limit {limit}x | Cap at limit and inform user. |
 | `TRADE_SIZE_EXCEEDED` | Trade size > hard cap | 交易金額 ${amount} 超過上限 ${limit} | Trade size ${amount} exceeds limit ${limit} | Cap at limit and inform user. |
 | `RATE_LIMITED` | API rate limit hit | API 請求頻率超限，{wait}秒後重試 | API rate limit reached. Retrying in {wait}s. | Wait 1s, retry up to 3x. |
+| `NOT_PROFITABLE` | Net P&L is zero or negative | 扣除所有成本後淨利潤為負（{net_pnl}），不建議執行 | Net profit is negative after all costs ({net_pnl}). Not recommended. | Show full cost breakdown |
+| `MARGIN_TOO_THIN` | Profit-to-cost ratio < 2 | 利潤空間偏薄（利潤/成本比 = {ratio}），風險較高 | Thin margin (profit/cost ratio = {ratio}). Higher risk. | Display sensitivity analysis |
+| `POSITION_LIMIT` | Max concurrent positions reached | 已達持倉上限（{current}/{max}），請先關閉現有倉位 | Position limit reached ({current}/{max}). Close existing positions first. | Show current open positions |
+| `SECURITY_BLOCKED` | GoPlus check failed | 安全檢查未通過：{reason}。此代幣存在風險，不建議操作。 | Security check failed: {reason}. This token is flagged as risky. | Do not proceed. |
+| `SECURITY_UNAVAILABLE` | GoPlus API unreachable | 安全檢查服務暫時無法使用，請謹慎操作 | Security check service unavailable. Proceed with extreme caution. | Retry once, then WARN and continue |
+| `HUMAN_APPROVAL_REQUIRED` | Copy trade needs confirmation | 此操作需要您的確認才能繼續 | This action requires your explicit approval to proceed. | Wait for user confirmation |
 
 ---
 
@@ -746,180 +825,73 @@ Interpretation:
 
 ---
 
-## 13. Output Templates
+## 13. Output Templates (Inlined)
 
-### 13.1 Scan Output
+### 13.1 Formatting Rules
+
+**Monetary Values:** `$12,345.67`, `+$1,234.56`, `-$89.10` (2 decimal places, comma thousands)
+**Percentages:** 1 decimal place (e.g., `12.5%`). APY/APR: 2 decimal places.
+**Basis Points:** Integer only (e.g., `21 bps`)
+**Risk Levels:** `[SAFE]`, `[WARN]`, `[BLOCK]`
+**Timestamps:** `YYYY-MM-DD HH:MM UTC` (always UTC)
+
+**Risk Gauge:**
+```
+1/10:  ▓░░░░░░░░░      LOW RISK
+3/10:  ▓▓▓░░░░░░░      MODERATE-LOW
+5/10:  ▓▓▓▓▓░░░░░      MODERATE
+7/10:  ▓▓▓▓▓▓▓░░░      ELEVATED
+9/10:  ▓▓▓▓▓▓▓▓▓░      HIGH RISK
+```
+
+**Sparklines:** Characters: `▁▂▃▄▅▆▇█` (8-24 data points)
+
+### 13.2 Global Header Template
 
 ```
 ══════════════════════════════════════════
-  Funding Rate Scanner -- SCAN
-  [DEMO] [RECOMMENDATION ONLY -- 不會自動執行]
+  {SKILL_NAME}
+  [{MODE}] [RECOMMENDATION ONLY — 不會自動執行]
 ══════════════════════════════════════════
-  Generated: 2026-03-09 14:30 UTC
-  Data sources: OKX REST (perpetual swaps)
+  Generated: {TIMESTAMP}
+  Data sources: {DATA_SOURCES}
 ══════════════════════════════════════════
+```
 
-── 資金費率掃描結果: Top {COUNT} ──────────
+### 13.3 Funding Rate Display Template
 
-  #{RANK}  {ASSET}-USDT-SWAP
-  ├─ 當前費率:      {RATE} / 8h ({ANNUALIZED}% ann.)
-  ├─ 上次結算費率:  {REALIZED}
-  ├─ 方向:          {DIRECTION} -> {RECOMMENDED_POSITION}
-  ├─ 每日收入/$10K: +${DAILY_10K}
-  ├─ 7 日趨勢:      {SPARKLINE} ({STABILITY})
-  └─ 風險:          {RISK_LEVEL}
+```
+── Funding Rate Overview ───────────────────
 
+  {ASSET}-USDT-SWAP
+  Current Rate:  {CURRENT_RATE} per 8h  ({ANNUALIZED} ann.)
+  Next Payment:  {NEXT_TIME} ({COUNTDOWN})
+  Trend (7d):    {SPARKLINE}  ({TREND_LABEL})
+
+  ── Rate History (last 8 payments) ────────
+  Time              Rate         Cumulative
+  ──────────────────────────────────────────
+  {T1}              {R1}         {C1}
   ...
 
-──────────────────────────────────────────
-  已掃描 {TOTAL_SCANNED} 個永續合約
-  篩選條件: 年化 >= {MIN_PCT}%
+  ── Harvest Projection ────────────────────
+  Position Size:   {POSITION_SIZE}
+  Daily Income:    {DAILY_INCOME}
+  Entry Cost:      {ENTRY_COST}
+  Break-Even:      {BREAK_EVEN_DAYS} days
+  30-Day Proj:     {THIRTY_DAY_INCOME} (at current rate)
 ```
 
-**Example (filled):**
+### 13.4 Next Steps Template
 
 ```
-══════════════════════════════════════════
-  Funding Rate Scanner -- SCAN
-  [DEMO] [RECOMMENDATION ONLY -- 不會自動執行]
-══════════════════════════════════════════
-  Generated: 2026-03-09 14:30 UTC
-  Data sources: OKX REST (perpetual swaps)
-══════════════════════════════════════════
-
-── 資金費率掃描結果: Top 5 ────────────────
-
-  #1  DOGE-USDT-SWAP
-  ├─ 當前費率:      +0.0350% / 8h (38.33% ann.)
-  ├─ 上次結算費率:  +0.0320%
-  ├─ 方向:          positive -> 做空永續 + 做多現貨
-  ├─ 每日收入/$10K: +$10.50
-  ├─ 7 日趨勢:      ▃▄▅▆▆▇▇█ (trending_up)
-  └─ 風險:          [SAFE]
-
-  #2  SOL-USDT-SWAP
-  ├─ 當前費率:      +0.0250% / 8h (27.38% ann.)
-  ├─ 上次結算費率:  +0.0230%
-  ├─ 方向:          positive -> 做空永續 + 做多現貨
-  ├─ 每日收入/$10K: +$7.50
-  ├─ 7 日趨勢:      ▅▅▆▅▆▆▇▆ (stable)
-  └─ 風險:          [SAFE]
-
-  #3  ETH-USDT-SWAP
-  ├─ 當前費率:      +0.0150% / 8h (16.43% ann.)
-  ├─ 上次結算費率:  +0.0142%
-  ├─ 方向:          positive -> 做空永續 + 做多現貨
-  ├─ 每日收入/$10K: +$4.50
-  ├─ 7 日趨勢:      ▃▄▅▅▆▆▇▇ (rising)
-  └─ 風險:          [SAFE]
-
-  #4  BTC-USDT-SWAP
-  ├─ 當前費率:      +0.0120% / 8h (13.14% ann.)
-  ├─ 上次結算費率:  +0.0115%
-  ├─ 方向:          positive -> 做空永續 + 做多現貨
-  ├─ 每日收入/$10K: +$3.60
-  ├─ 7 日趨勢:      ▅▅▄▅▅▅▆▅ (stable)
-  └─ 風險:          [SAFE]
-
-  #5  PEPE-USDT-SWAP
-  ├─ 當前費率:      +0.0480% / 8h (52.56% ann.)
-  ├─ 上次結算費率:  +0.0120%
-  ├─ 方向:          positive -> 做空永續 + 做多現貨
-  ├─ 每日收入/$10K: +$14.40
-  ├─ 7 日趨勢:      ▁▂▂▃▃▅▆█ (volatile)
-  └─ 風險:          [WARN] 費率波動大，過去 24h 曾翻轉
-
-──────────────────────────────────────────
-  已掃描 142 個永續合約
-  篩選條件: 年化 >= 10%
-
 ══════════════════════════════════════════
   Next Steps
 ══════════════════════════════════════════
 
-  1. 深入評估 DOGE carry 交易:
-     funding-rate-arbitrage evaluate --asset DOGE --size-usd 5000 --hold-days 7
-  2. 查看 ETH 歷史資金費率:
-     funding-rate-arbitrage rates --asset ETH --lookback-intervals 24
-  3. 查看情景分析:
-     funding-rate-arbitrage carry-pnl --asset SOL --size-usd 10000 --hold-days 30
-
-  ── Disclaimer ────────────────────────────
-  This is analysis only. No trades are executed automatically.
-  All recommendations require manual review and execution.
-  以上僅為分析建議，不會自動執行任何交易。
-  所有建議均需人工審核後手動操作。
-══════════════════════════════════════════
-```
-
-### 13.2 Evaluate Output
-
-> Uses Funding Rate Display Template from `references/output-templates.md` Section 10.
-
-```
-══════════════════════════════════════════
-  Funding Rate Arbitrage -- EVALUATE
-  [DEMO] [RECOMMENDATION ONLY -- 不會自動執行]
-══════════════════════════════════════════
-  Generated: 2026-03-09 14:35 UTC
-  Data sources: OKX REST
-══════════════════════════════════════════
-
-── ETH 資金費率套利評估 ───────────────────
-
-  ETH-USDT-SWAP
-  Current Rate:  +0.0150% per 8h  (16.43% ann.)
-  Next Payment:  2026-03-09 16:00 UTC (1h 25m)
-  Trend (7d):    ▃▄▅▅▆▆▇▇  (rising)
-
-── 建倉成本 (VIP1, $50,000) ───────────────
-
-  Leg 1 -- OKX Spot (Buy ETH)
-  ├─ Trading Fee:    $35.00      (7.0 bps)
-  └─ Slippage Est:   $5.00       (1.0 bps)
-
-  Leg 2 -- OKX Perp (Short ETH-USDT-SWAP)
-  ├─ Trading Fee:    $22.50      (4.5 bps)
-  └─ Slippage Est:   $5.00       (1.0 bps)
-
-  ──────────────────────────────────────
-  Entry Cost:        $67.50      (13.5 bps)
-  Exit Cost:         $67.50      (13.5 bps)
-  Total Round-Trip:  $135.00     (27.0 bps)
-
-── 收入預估 (持倉 7 天) ──────────────────
-
-  每日收入:        +$22.50
-  7 天總收入:      +$157.50
-  扣除成本後淨利:  +$22.50
-  年化淨收益:       9.4%
-  盈虧平衡天數:    6.0 天
-
-── Risk Assessment ─────────────────────────
-
-  Overall Risk:  ▓▓▓░░░░░░░  3/10
-                 MODERATE-LOW
-
-  Breakdown:
-  ├─ Execution Risk:   ▓▓░░░░░░░░  2/10
-  │                    Both legs on OKX; deep liquidity
-  ├─ Funding Risk:     ▓▓▓░░░░░░░  3/10
-  │                    Rate rising trend; 0 sign flips in 7d
-  └─ Holding Risk:     ▓▓▓░░░░░░░  3/10
-                       7-day hold is within review period
-
-  Result: [PROFITABLE]
-
-══════════════════════════════════════════
-  Next Steps
-══════════════════════════════════════════
-
-  1. 查看情景分析 (bull/base/bear):
-     funding-rate-arbitrage carry-pnl --asset ETH --size-usd 50000 --hold-days 30
-  2. 比較其他幣種費率:
-     funding-rate-arbitrage scan --top-n 10 --min-annualized-pct 10
-  3. 如已開倉，定期檢查:
-     funding-rate-arbitrage unwind-check --asset ETH --entry-rate 0.000150 --held-days 7 --size-usd 50000
+  {STEP_1}
+  {STEP_2}
+  {STEP_3}
 
   ── Disclaimer ────────────────────────────
   This is analysis only. No trades are executed automatically.
@@ -933,7 +905,175 @@ Interpretation:
 
 ---
 
-## 14. Conversation Examples
+## 14. MCP Tool Reference (Inlined)
+
+### 14.1 market_get_funding_rate
+
+**Purpose:** Retrieve the current and predicted funding rate for perpetual swap instruments.
+
+**Parameters:**
+
+| Param | Required | Default | Type | Description |
+|-------|----------|---------|------|-------------|
+| instId | Yes | — | string | Perpetual swap instrument ID. **Must** end in `-SWAP` (e.g. `"BTC-USDT-SWAP"`). |
+
+**Return Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| fundingRate | string | Current period funding rate (e.g. `"0.0001"` = 0.01%) |
+| realizedRate | string | Last settled (realized) funding rate |
+| fundingTime | string | Next funding settlement time in ms since epoch |
+| nextFundingRate | string | Predicted next funding rate (may be empty) |
+| instId | string | Instrument ID echo |
+
+**Rate Limit:** 10 requests/second.
+
+**Example Response:**
+```json
+{
+  "fundingRate": "0.00015",
+  "realizedRate": "0.00012",
+  "fundingTime": "1741536000000",
+  "nextFundingRate": "0.00018",
+  "instId": "BTC-USDT-SWAP"
+}
+```
+
+### 14.2 market_get_ticker
+
+**Purpose:** Retrieve real-time ticker data for a single instrument.
+
+**Parameters:**
+
+| Param | Required | Default | Type | Description |
+|-------|----------|---------|------|-------------|
+| instId | Yes | — | string | Instrument ID (e.g. `"BTC-USDT"`, `"ETH-USDT-SWAP"`) |
+
+**Return Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| last | string | Last traded price |
+| bidPx | string | Best bid price |
+| askPx | string | Best ask price |
+| open24h | string | Opening price 24 hours ago |
+| high24h | string | 24-hour high |
+| low24h | string | 24-hour low |
+| vol24h | string | 24-hour volume in base currency |
+| ts | string | Data timestamp in milliseconds since epoch |
+
+**Rate Limit:** 20 requests/second.
+
+### 14.3 market_get_instruments
+
+**Purpose:** List available trading instruments with contract specifications.
+
+**Parameters:**
+
+| Param | Required | Default | Type | Description |
+|-------|----------|---------|------|-------------|
+| instType | Yes | — | string | Instrument type: `SPOT`, `SWAP`, `FUTURES`, `OPTION` |
+| instId | No | — | string | Filter by specific instrument ID |
+| uly | No | — | string | Filter by underlying (e.g. `"BTC-USDT"`) |
+
+**Return Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| instId | string | Instrument ID |
+| instType | string | Instrument type |
+| settleCcy | string | Settlement currency |
+| ctVal | string | Contract value |
+| lever | string | Maximum leverage available |
+| tickSz | string | Tick size |
+| lotSz | string | Lot size |
+| minSz | string | Minimum order size |
+
+**Rate Limit:** 20 requests/second.
+
+### 14.4 market_get_candles
+
+**Purpose:** Retrieve OHLCV candlestick data.
+
+**Parameters:**
+
+| Param | Required | Default | Type | Description |
+|-------|----------|---------|------|-------------|
+| instId | Yes | — | string | Instrument ID |
+| bar | No | `"1m"` | string | Interval: `1m`, `5m`, `15m`, `30m`, `1H`, `4H`, `1D`, `1W` |
+| limit | No | `100` | string | Number of candles. Max `100`. |
+
+**Rate Limit:** 20 requests/second.
+
+### 14.5 system_get_capabilities
+
+**Purpose:** Health check.
+**Parameters:** None.
+**Returns:** `{ authenticated, mode, modules, serverVersion, timestamp }`
+
+### 14.6 Important MCP Notes
+
+- **String values** — Every numeric value from OKX is a string. Always `parseFloat()` before arithmetic.
+- **Timestamps** — All in milliseconds since Unix epoch.
+- **Data retention** — ~3 months max.
+- **Demo mode** — When `mode: "demo"`, all data is simulated.
+- **Error responses** — On failure, check for `error` field before processing.
+
+### 14.7 Rate Limits Summary
+
+| Tool | Rate Limit | Notes |
+|------|-----------|-------|
+| market_get_funding_rate | 10 req/s | Batch in groups of 8, 1s delay between batches |
+| market_get_ticker | 20 req/s | Safe to batch multiple assets |
+| market_get_instruments | 20 req/s | Single call, cache for session |
+| market_get_candles | 20 req/s | Paginate with limit=100 for history |
+
+---
+
+## 15. Fee Schedule (Inlined)
+
+### 15.1 OKX Spot Trading Fees
+
+| Tier | 30d Volume (USD) | Maker | Taker |
+|------|------------------|-------|-------|
+| VIP0 | < 5M | 0.060% | 0.080% |
+| VIP1 | >= 5M | 0.040% | 0.070% |
+| VIP2 | >= 10M | 0.030% | 0.060% |
+| VIP3 | >= 20M | 0.020% | 0.050% |
+| VIP4 | >= 100M | 0.015% | 0.040% |
+| VIP5 | >= 200M | 0.010% | 0.035% |
+
+### 15.2 USDT-Margined Swap (Perpetual) Fees
+
+| Tier | 30d Volume (USD) | Maker | Taker |
+|------|------------------|-------|-------|
+| VIP0 | < 5M | 0.020% | 0.050% |
+| VIP1 | >= 5M | 0.015% | 0.045% |
+| VIP2 | >= 10M | 0.010% | 0.040% |
+| VIP3 | >= 20M | 0.008% | 0.035% |
+| VIP4 | >= 100M | 0.005% | 0.030% |
+| VIP5 | >= 200M | 0.002% | 0.025% |
+
+### 15.3 Quick Reference: Round-Trip Taker Fees (bps)
+
+| Tier | Spot RT | Swap RT |
+|------|---------|---------|
+| VIP0 | 16.0 bps | 10.0 bps |
+| VIP1 | 14.0 bps | 9.0 bps |
+| VIP2 | 12.0 bps | 8.0 bps |
+| VIP3 | 10.0 bps | 7.0 bps |
+| VIP4 | 8.0 bps | 6.0 bps |
+| VIP5 | 7.0 bps | 5.0 bps |
+
+**Fee Notes:**
+- Maker = limit order that adds liquidity. Taker = market order or immediately matched.
+- For cost estimation, assume taker fees unless specifically using limit orders.
+- Fees are deducted from the received asset (spot) or from margin (derivatives).
+
+---
+
+## 16. Conversation Examples
 
 ### Example 1: Scan for Top Funding Rates
 
@@ -954,13 +1094,62 @@ Interpretation:
    -> [{ instId: "BTC-USDT-SWAP" }, { instId: "ETH-USDT-SWAP" }, ...]
 3. For each instId (batched, respecting 10 req/s limit):
    market_get_funding_rate(instId)
-   -> { fundingRate: "0.000150", realizedRate: "0.000142", fundingTime: "...", ... }
 4. Filter: annualized_pct >= 10
 5. Sort descending by annualized_pct
 6. For top 10: market_get_ticker(instId) for income calculation
 ```
 
-**Output:** (See Section 13.1 filled example above)
+**Output:**
+
+```
+══════════════════════════════════════════
+  Funding Rate Scanner -- SCAN
+  [DEMO] [RECOMMENDATION ONLY -- 不會自動執行]
+══════════════════════════════════════════
+  Generated: 2026-03-09 14:30 UTC
+  Data sources: OKX REST (perpetual swaps)
+══════════════════════════════════════════
+
+── 資金費率掃描結果: Top 5 ────────────────
+
+  #1  DOGE-USDT-SWAP
+  +- 當前費率:      +0.0350% / 8h (38.33% ann.)
+  +- 上次結算費率:  +0.0320%
+  +- 方向:          positive -> 做空永續 + 做多現貨
+  +- 每日收入/$10K: +$10.50
+  +- 7 日趨勢:      ▃▄▅▆▆▇▇█ (trending_up)
+  +- 風險:          [SAFE]
+
+  #2  SOL-USDT-SWAP
+  +- 當前費率:      +0.0250% / 8h (27.38% ann.)
+  +- 上次結算費率:  +0.0230%
+  +- 方向:          positive -> 做空永續 + 做多現貨
+  +- 每日收入/$10K: +$7.50
+  +- 7 日趨勢:      ▅▅▆▅▆▆▇▆ (stable)
+  +- 風險:          [SAFE]
+
+  ...
+
+──────────────────────────────────────────
+  已掃描 142 個永續合約
+  篩選條件: 年化 >= 10%
+
+══════════════════════════════════════════
+  Next Steps
+══════════════════════════════════════════
+
+  1. 深入評估 DOGE carry 交易:
+     funding-rate-arbitrage evaluate --asset DOGE --size-usd 5000 --hold-days 7
+  2. 查看 ETH 歷史資金費率:
+     funding-rate-arbitrage rates --asset ETH --lookback-intervals 24
+  3. 查看情景分析:
+     funding-rate-arbitrage carry-pnl --asset SOL --size-usd 10000 --hold-days 30
+
+  ── Disclaimer ────────────────────────────
+  This is analysis only. No trades are executed automatically.
+  以上僅為分析建議，不會自動執行任何交易。
+══════════════════════════════════════════
+```
 
 ---
 
@@ -977,19 +1166,14 @@ Interpretation:
 - VIP tier: VIP1
 
 **Tool Calls:**
-
 ```
 1. system_get_capabilities -> { authenticated: true, mode: "demo" }
 2. market_get_funding_rate(instId: "ETH-USDT-SWAP")
-   -> { fundingRate: "0.000150", realizedRate: "0.000142", fundingTime: "1741536000000" }
 3. market_get_ticker(instId: "ETH-USDT")
-   -> { last: "3412.50", bidPx: "3412.10", askPx: "3412.90" }
 4. market_get_ticker(instId: "ETH-USDT-SWAP")
-   -> { last: "3413.20", bidPx: "3413.00", askPx: "3413.40" }
 ```
 
 **Computation:**
-
 ```
 annualized = 0.000150 * 3 * 365 * 100 = 16.43%
 daily_income = 50000 * 0.000150 * 3 = $22.50
@@ -1007,7 +1191,7 @@ Net profit = $157.50 - $135.00 = $22.50
 Break-even = 135 / 22.50 = 6.0 days
 ```
 
-**Output:** (See Section 13.2 filled example above)
+**Output:** Full evaluate template with cost breakdown, income projection, risk gauge, and next steps.
 
 ---
 
@@ -1023,77 +1207,11 @@ Break-even = 135 / 22.50 = 6.0 days
 - Held days: 5
 - Size: $10,000
 
-**Tool Calls:**
-
-```
-1. system_get_capabilities -> { authenticated: true, mode: "demo" }
-2. market_get_funding_rate(instId: "ETH-USDT-SWAP")
-   -> { fundingRate: "0.000160", realizedRate: "0.000155" }
-3. market_get_candles(instId: "ETH-USDT-SWAP", bar: "8H", limit: "21")
-   -> (for trend analysis over last 7 days)
-```
-
-**Formatted Output:**
-
-```
-══════════════════════════════════════════
-  Funding Rate Arbitrage -- UNWIND CHECK
-  [DEMO] [RECOMMENDATION ONLY -- 不會自動執行]
-══════════════════════════════════════════
-  Generated: 2026-03-09 14:40 UTC
-══════════════════════════════════════════
-
-── ETH Carry 持倉評估 ─────────────────────
-
-  持倉規模:     $10,000.00
-  已持有:       5 天
-  建倉費率:     +0.0150% / 8h
-  當前費率:     +0.0160% / 8h (+6.7%)
-  費率趨勢:     ▃▄▅▅▆▆▇▇ (rising)
-
-── 已實現收益估算 ─────────────────────────
-
-  預估已收資金費:  +$22.50  (5天 * $4.50/天)
-  建倉成本:        -$13.50  (VIP0 entry)
-  預估平倉成本:    -$13.50
-  預估淨 PnL:      -$4.50   (尚未回本)
-
-── 前瞻展望 ───────────────────────────────
-
-  當前年化收益:    17.52%
-  未來 7 天預估:   +$33.60 (at current rate)
-  連續反向區間:    0 次 (費率一直為正)
-
-── 建議 ───────────────────────────────────
-
-  建議: CONTINUE
-
-  原因: 費率持續上升 (+6.7% vs 建倉時)，無翻轉跡象。
-  再持有 1-2 天即可完全覆蓋進出成本 (盈虧平衡 ~6.0 天)。
-  建議下次審視: 2026-03-12 (建倉 7 天時)
-
-══════════════════════════════════════════
-  Next Steps
-══════════════════════════════════════════
-
-  1. 持續持倉，7 天時重新評估:
-     funding-rate-arbitrage unwind-check --asset ETH --entry-rate 0.000150 --held-days 7 --size-usd 10000
-  2. 查看情景分析:
-     funding-rate-arbitrage carry-pnl --asset ETH --size-usd 10000 --hold-days 30
-  3. 掃描是否有更高費率機會:
-     funding-rate-arbitrage scan --top-n 5
-
-  ── Disclaimer ────────────────────────────
-  This is analysis only. No trades are executed automatically.
-  All recommendations require manual review and execution.
-  以上僅為分析建議，不會自動執行任何交易。
-  所有建議均需人工審核後手動操作。
-══════════════════════════════════════════
-```
+**Output:** Position summary, estimated income earned, exit cost, forward outlook with rate trend, recommendation (CONTINUE/UNWIND/REDUCE) with reasoning.
 
 ---
 
-## 15. Implementation Notes
+## 17. Implementation Notes
 
 ### Funding Rate Scan Optimization
 
@@ -1120,8 +1238,6 @@ if current_sign != realized_sign:
   -> WARN level
 ```
 
-For consecutive flip detection (unwind-check), analyze the last N intervals from candle/bill data.
-
 ### OKX String-to-Number Convention
 
 All OKX API values are returned as **strings**. Always parse to `float` before arithmetic:
@@ -1142,7 +1258,7 @@ RIGHT:  parseFloat("0.000150") * 3 * 365 -> 0.16425
 
 ---
 
-## 16. Reference Files
+## 18. Reference Files
 
 | File | Relevance to This Skill |
 |------|------------------------|
@@ -1152,10 +1268,13 @@ RIGHT:  parseFloat("0.000150") * 3 * 365 -> 0.16425
 | `references/output-templates.md` | Funding Rate Display Template (Section 10), Global Header, Next Steps |
 | `references/safety-checks.md` | Pre-trade checklist, per-strategy risk limits (funding-rate-arbitrage section) |
 
+> **Note:** All content from the above reference files has been inlined in this document (Sections 8-10, 13-15) for OpenClaw/Lark compatibility. The LLM can ONLY see this SKILL.md content and cannot read any other files.
+
 ---
 
-## 17. Changelog
+## 19. Changelog
 
 | Date | Version | Changes |
 |------|---------|---------|
 | 2026-03-09 | 1.0.0 | Initial release. 5 commands: scan, evaluate, rates, carry-pnl, unwind-check. |
+| 2026-03-09 | 1.1.0 | All external reference content inlined for OpenClaw/Lark self-contained deployment. |

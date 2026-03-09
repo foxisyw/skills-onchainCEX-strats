@@ -39,7 +39,7 @@ that determines whether an opportunity is worth executing.
 
 - **Execute trades** -- analysis only, never sends orders
 - **Fetch prices** -- expects prices as input from `price-feed-aggregator` or caller
-- **Check token security** -- delegate to GoPlus MCP (see `references/goplus-tools.md`)
+- **Check token security** -- delegate to GoPlus MCP
 - **Discover opportunities** -- delegate to strategy skills (`cex-dex-arbitrage`, etc.)
 - **Manage positions** -- no state is persisted between calls
 
@@ -89,8 +89,8 @@ This skill has minimal dependencies. It needs:
 |-----------|---------|-----------|
 | `okx-trade-mcp` | Fee schedule lookup, orderbook depth for slippage estimation | Yes |
 | `OnchainOS CLI` | Gas price fetch (`onchain-gateway gas`), gas limit estimation | Only for onchain legs |
-| `references/fee-schedule.md` | Static fee tables, withdrawal fee lookup | Yes (built-in) |
-| `references/formulas.md` | Calculation formulas | Yes (built-in) |
+| Fee tables (inlined below) | Static fee tables, withdrawal fee lookup | Yes (built-in) |
+| Formulas (inlined below) | Calculation formulas | Yes (built-in) |
 
 ### Pre-flight Checks
 
@@ -101,7 +101,7 @@ This skill has minimal dependencies. It needs:
 
 2. If trade has onchain legs:
    - Verify OnchainOS CLI is available: `which onchainos`
-   - If unavailable: use benchmark gas values from fee-schedule.md
+   - If unavailable: use benchmark gas values from fee tables below
      and flag confidence as "medium"
 ```
 
@@ -178,7 +178,7 @@ TradeLeg:
 | Field | Type | Validation | On Failure |
 |-------|------|-----------|------------|
 | `venue` | string | Must be one of: `okx-cex`, `okx-dex`, `uniswap`, `jupiter`, `curve`, `pancakeswap` | `INVALID_LEG` |
-| `chain` | string | Required when venue is not `okx-cex`. Must match `references/chain-reference.md` | `MISSING_FIELD` |
+| `chain` | string | Required when venue is not `okx-cex`. Must match Supported Chains Table below. | `MISSING_FIELD` |
 | `asset` | string | Non-empty. If contract address, must be lowercase for EVM chains. | `MISSING_FIELD` |
 | `side` | string | Must be `buy` or `sell` | `INVALID_LEG` |
 | `size_usd` | number | Must be > 0 | `INVALID_LEG` |
@@ -205,7 +205,7 @@ ProfitabilityResult:
     dex_trading_fee: number      # From swap quote or estimated from protocol fee table
     gas_cost: number             # For onchain legs: gas_gwei * gas_limit * native_price / 1e9
     slippage_cost: number        # Estimated from orderbook depth or user-provided bps
-    withdrawal_fee: number       # Fixed per-asset from OKX schedule (fee-schedule.md)
+    withdrawal_fee: number       # Fixed per-asset from OKX schedule
     deposit_fee: number          # Usually 0 (user pays network gas only)
     bridge_fee: number           # If cross-chain transfer required
     funding_payment: number      # For perp legs held over funding intervals
@@ -225,7 +225,7 @@ ProfitabilityResult:
 | Level | Criteria |
 |-------|---------|
 | `high` | All cost data fetched live (gas, orderbook, fees). Slippage auto-calculated. |
-| `medium` | Some data from benchmarks (e.g. gas from fee-schedule.md, not live). |
+| `medium` | Some data from benchmarks (e.g. gas from fee tables, not live). |
 | `low` | User-provided estimates for multiple fields. No live data verification. |
 
 ---
@@ -252,7 +252,7 @@ cost_detail:
   amount_bps: number     # Cost in basis points relative to trade size
   pct_of_gross: number   # This cost as % of gross spread
   formula: string        # The formula used (e.g. "1000 * 0.0008 = $0.80")
-  data_source: string    # Where the input came from ("live orderbook", "fee-schedule.md", "user input")
+  data_source: string    # Where the input came from ("live orderbook", "fee tables", "user input")
   optimization_hint: string  # Optional suggestion (e.g. "Use limit order for maker fee: 0.06%")
 ```
 
@@ -376,7 +376,7 @@ For each leg, gather the cost inputs:
 FOR EACH leg IN TradeLeg[]:
 
   IF leg.venue == "okx-cex":
-    ├─ Fee rate: lookup from references/fee-schedule.md using vip_tier + instrument_type
+    ├─ Fee rate: lookup from OKX Fee Tables below using vip_tier + instrument_type
     │   - Spot VIP0 taker: 0.080%, maker: 0.060%
     │   - Swap VIP0 taker: 0.050%, maker: 0.020%
     │
@@ -386,20 +386,20 @@ FOR EACH leg IN TradeLeg[]:
     │   price_impact_bps = (vwap - best_price) / best_price * 10000
     │
     └─ Withdrawal fee: if withdrawal_required=true
-        Lookup from fee-schedule.md → fixed amount per asset+network
+        Lookup from OKX Withdrawal Fee Tables below → fixed amount per asset+network
 
   IF leg.venue is DEX (okx-dex, uniswap, jupiter, etc.):
     ├─ Gas price: if gas_gwei not provided:
     │   onchainos onchain-gateway gas --chain {chain}
-    │   On failure → use benchmark from fee-schedule.md, set confidence="medium"
+    │   On failure → use benchmark from Gas Benchmarks table below, set confidence="medium"
     │
-    ├─ Gas limit: use benchmarks from fee-schedule.md:
+    ├─ Gas limit: use benchmarks from Gas Benchmarks table below:
     │   - Ethereum: 150,000-300,000
     │   - Arbitrum: 1,000,000-2,000,000
     │   - Solana: N/A (use lamport-based calculation)
     │   Or fetch via onchainos onchain-gateway gas-limit if calldata available
     │
-    ├─ DEX protocol fee: lookup from fee-schedule.md:
+    ├─ DEX protocol fee: lookup from DEX Protocol Fee Tables below:
     │   - Uniswap standard: 30 bps
     │   - Jupiter: 0 bps (aggregator layer)
     │   - Note: DEX quotes from aggregators already include protocol fees
@@ -407,7 +407,7 @@ FOR EACH leg IN TradeLeg[]:
     │
     └─ Slippage: if not provided:
         Use price impact from dex-swap quote if available
-        Otherwise estimate from fee-schedule.md benchmarks
+        Otherwise estimate from benchmarks
 
   IF leg has funding_intervals > 0:
     ├─ If funding_rate not provided:
@@ -424,7 +424,7 @@ FOR EACH leg IN TradeLeg[]:
 ### Step 3: Compute Each Cost Layer and Net Profit
 
 ```
-# Formulas (cross-reference: references/formulas.md)
+# Formulas (all inlined below in Section 9)
 
 cex_trading_fee = size_usd * fee_rate
   - fee_rate: 0.0008 (taker VIP0 spot) or 0.0006 (maker VIP0 spot)
@@ -438,13 +438,13 @@ slippage_cost = size_usd * estimated_slippage_bps / 10000
   - Auto-calc: walk orderbook to find VWAP at size_usd
   - price_impact_bps = (vwap - best_price) / best_price * 10000
 
-withdrawal_fee = lookup from fee-schedule.md
-  - ETH (ERC-20): 0.00035 ETH (~$1.21 at $3,450)
-  - ETH (Arbitrum): 0.0001 ETH (~$0.35)
+withdrawal_fee = lookup from OKX Withdrawal Fee Tables below
+  - ETH (ERC-20): 0.00035 ETH
+  - ETH (Arbitrum): 0.0001 ETH
   - USDT (TRC-20): 1.0 USDT
   - USDT (Arbitrum): 0.1 USDT
 
-bridge_fee = estimated from fee-schedule.md Section 5
+bridge_fee = estimated from Bridge Fee Tables below
   - Across Protocol: 0.04-0.12% of amount
   - OKX Bridge: 0-0.1%
 
@@ -493,93 +493,645 @@ ALWAYS:
 
 ## 9. Cost Computation Formulas
 
-> All formulas here are canonical. For full derivations and worked examples, see
-> `references/formulas.md` Sections 1-2 and 7.
+### CEX-DEX Spread (basis points)
+
+```
+spread_bps = abs(cex_price - dex_price) / min(cex_price, dex_price) * 10000
+```
+
+| Variable | Definition |
+|----------|-----------|
+| `cex_price` | Mid-price on CEX orderbook (OKX), or best bid/ask depending on direction |
+| `dex_price` | Quote price returned by DEX aggregator for the given size |
+| `spread_bps` | Unsigned spread in basis points (1 bp = 0.01%) |
+
+**Worked Example:**
+
+```
+cex_price = 3,412.50  (ETH-USDT mid on OKX)
+dex_price = 3,419.80  (Jupiter quote, selling ETH for USDT on Solana)
+
+spread_bps = abs(3412.50 - 3419.80) / min(3412.50, 3419.80) * 10000
+           = 7.30 / 3412.50 * 10000
+           = 21.4 bps
+```
+
+**Caveats:**
+- Always use the same quote direction (both buy or both sell) for a fair comparison.
+- DEX price already includes DEX protocol fee and price impact for the quoted size.
+- CEX price should use bid for sell, ask for buy -- not mid -- when evaluating executable spread.
+
+### Effective Price After Slippage
+
+```
+effective_price = quoted_price * (1 + slippage_bps / 10000)   # for buys
+effective_price = quoted_price * (1 - slippage_bps / 10000)   # for sells
+```
+
+### Price Impact Estimation from Orderbook Depth
+
+```
+price_impact_bps = (execution_avg_price - best_price) / best_price * 10000
+```
+
+Where `execution_avg_price` is the volume-weighted average price across consumed levels:
+
+```
+execution_avg_price = sum(level_price_i * level_qty_i) / sum(level_qty_i)
+    for levels consumed until order_size is filled
+```
+
+**Worked Example (Selling 10 ETH):**
+
+```
+Orderbook bids:
+  Level 1: 3,412.50 x 3 ETH
+  Level 2: 3,412.00 x 4 ETH
+  Level 3: 3,411.20 x 5 ETH
+
+execution_avg_price = (3412.50*3 + 3412.00*4 + 3411.20*3) / (3+4+3)
+                    = (10237.50 + 13648.00 + 10233.60) / 10
+                    = 34119.10 / 10
+                    = 3,411.91
+
+price_impact_bps = (3412.50 - 3411.91) / 3412.50 * 10000
+                 = 0.59 / 3412.50 * 10000
+                 = 1.7 bps
+```
 
 ### CEX Trading Fee
 
 ```
 cex_fee = size_usd * fee_rate
-
-Quick Reference (Spot Taker):
-  VIP0: 0.080% = 8.0 bps
-  VIP1: 0.070% = 7.0 bps
-  VIP2: 0.060% = 6.0 bps
-  VIP3: 0.050% = 5.0 bps
-
-Quick Reference (Swap Taker):
-  VIP0: 0.050% = 5.0 bps
-  VIP1: 0.045% = 4.5 bps
-  VIP2: 0.040% = 4.0 bps
 ```
 
-### Gas Cost (EVM)
+| Variable | Definition |
+|----------|-----------|
+| `size_usd` | Notional trade size in USD |
+| `fee_rate` | Maker or taker rate per VIP tier (see fee tables below) |
+
+**Worked Example (VIP1 Taker, $50,000 trade):**
+
+```
+cex_fee = 50000 * 0.0007
+        = $35.00
+```
+
+### DEX Gas Cost (EVM)
 
 ```
 gas_cost_usd = gas_price_gwei * gas_limit * native_token_price_usd / 1e9
-
-Example (Ethereum):
-  30 gwei * 150,000 * $3,450 / 1e9 = $15.53
-
-Example (Arbitrum):
-  0.3 gwei * 1,500,000 * $3,450 / 1e9 = $1.55
-
-Example (Base):
-  0.01 gwei * 200,000 * $3,450 / 1e9 = $0.007
 ```
 
-### Gas Cost (Solana)
+| Variable | Definition |
+|----------|-----------|
+| `gas_price_gwei` | Current gas price in gwei (for EVM chains) |
+| `gas_limit` | Gas units required for the transaction |
+| `native_token_price_usd` | Current USD price of the chain's native token (ETH, BNB, MATIC, etc.) |
+
+**Worked Example (Uniswap swap on Ethereum):**
+
+```
+gas_price_gwei = 30
+gas_limit = 150,000
+native_token_price_usd = 3,400
+
+gas_cost_usd = 30 * 150000 * 3400 / 1e9
+             = 15,300,000,000 / 1,000,000,000
+             = $15.30
+```
+
+### DEX Gas Cost (Solana)
+
+Solana uses lamports instead of gwei:
 
 ```
 gas_cost_usd = (base_fee_lamports + priority_fee_lamports) * sol_price_usd / 1e9
-
-Example:
-  (5,000 + 50,000) * $145 / 1e9 = $0.008
 ```
+
+**Worked Example:**
+
+```
+tx_fee_lamports = 5,000  (base fee)
+priority_fee_lamports = 50,000  (typical priority fee)
+sol_price_usd = 145
+
+gas_cost_usd = (5000 + 50000) * 145 / 1e9
+             = 7,975,000 / 1,000,000,000
+             = $0.008
+```
+
+**Gas Caveats:**
+- Gas prices are highly volatile, especially on Ethereum mainnet.
+- Complex swaps (multi-hop, multi-pool) consume more gas.
+- L2s (Arbitrum, Base) also pay an L1 data posting fee that fluctuates.
+- Always fetch real-time gas estimates; benchmarks are rough guides only.
 
 ### Slippage Cost
 
 ```
-slippage_cost = size_usd * estimated_slippage_bps / 10000
-
-Auto-calculation from orderbook:
-  1. Fetch orderbook: market_get_orderbook(instId, sz="400")
-  2. Walk levels until cumulative size >= order_size
-  3. vwap = sum(price_i * qty_i) / sum(qty_i)
-  4. price_impact_bps = abs(vwap - best_price) / best_price * 10000
-  5. slippage_cost = size_usd * price_impact_bps / 10000
+slippage_cost_usd = size_usd * estimated_slippage_bps / 10000
 ```
 
-### Withdrawal Fee
+**Worked Example:**
 
 ```
-Flat fee per asset + network. Lookup from references/fee-schedule.md.
+size_usd = 50,000
+estimated_slippage_bps = 8
 
-Common values:
-  ETH (ERC-20):    0.00035 ETH
-  ETH (Arbitrum):  0.0001 ETH
-  ETH (Base):      0.00004 ETH
-  USDT (TRC-20):   1.0 USDT
-  USDT (Arbitrum):  0.1 USDT
-  USDT (ERC-20):   3.0 USDT
-  SOL (Solana):    0.008 SOL
+slippage_cost_usd = 50000 * 8 / 10000
+                  = $40.00
+```
 
-Convert to USD: withdrawal_fee_usd = fee_amount * asset_price_usd
+**Auto-calculation from orderbook:**
+
+```
+1. Fetch orderbook: market_get_orderbook(instId, sz="400")
+2. Walk levels until cumulative size >= order_size
+3. vwap = sum(price_i * qty_i) / sum(qty_i)
+4. price_impact_bps = abs(vwap - best_price) / best_price * 10000
+5. slippage_cost = size_usd * price_impact_bps / 10000
+```
+
+### Total Cost Aggregation
+
+```
+total_cost = cex_fee + dex_gas_cost + dex_protocol_fee + slippage_cost + bridge_fee + withdrawal_fee
+```
+
+For a round-trip trade:
+
+```
+total_cost_roundtrip = (cex_fee_entry + cex_fee_exit)
+                     + (dex_gas_entry + dex_gas_exit)
+                     + (dex_protocol_fee_entry + dex_protocol_fee_exit)
+                     + (slippage_entry + slippage_exit)
+                     + bridge_fee  (if cross-chain)
+                     + withdrawal_fee  (if moving between CEX/DEX)
+```
+
+**Worked Example (CEX-DEX arb, one direction):**
+
+```
+cex_fee (VIP1 taker)    = $35.00
+dex_gas (Arbitrum)       =  $0.30
+dex_protocol_fee         =  $0.00  (included in quote)
+slippage (CEX)           = $15.00
+withdrawal_fee (USDT)    =  $1.00
+bridge_fee               =  $0.00  (same chain)
+
+total_cost = 35.00 + 0.30 + 0.00 + 15.00 + 1.00 + 0.00
+           = $51.30
 ```
 
 ### Net Profit
 
 ```
-net_profit = gross_spread_usd - total_costs_usd
-profit_to_cost_ratio = net_profit / total_costs_usd
+net_profit = gross_spread_usd - total_cost
+```
+
+```
+gross_spread_usd = size_usd * spread_bps / 10000
+```
+
+**Worked Example:**
+
+```
+size_usd = 50,000
+spread_bps = 21.4
+
+gross_spread_usd = 50000 * 21.4 / 10000 = $107.00
+total_cost = $51.30
+
+net_profit = 107.00 - 51.30 = $55.70
+```
+
+### Profit-to-Cost Ratio
+
+```
+profit_to_cost = net_profit / total_cost
+```
+
+**Interpretation:**
+- < 1.0x: Costs exceed profit -- do not trade
+- 1.0x - 1.5x: Marginal -- high execution risk, consider skipping
+- 1.5x - 3.0x: Acceptable -- proceed with caution
+- 3.0x+: Attractive -- high confidence trade
+
+### Minimum Spread for Breakeven
+
+```
 min_spread_bps = total_costs_usd / size_usd * 10000
+```
+
+### Funding Payment
+
+```
+funding_payment = size_usd * funding_rate * funding_intervals
+```
+- Positive funding_rate + short position = receive payment
+- Positive funding_rate + long position = pay funding
+
+### Borrow Cost
+
+```
+borrow_cost = size_usd * borrow_rate_annual * hold_days / 365
 ```
 
 ---
 
-## 10. Safety Checks
+## 10. OKX CEX Trading Fee Tables
 
-> Cross-reference: `references/safety-checks.md` Section 1, checks #10-11.
+### Spot Trading Fees
+
+| Tier | 30d Volume (USD) | Maker | Taker |
+|------|------------------|-------|-------|
+| VIP0 | < 5M | 0.060% | 0.080% |
+| VIP1 | >= 5M | 0.040% | 0.070% |
+| VIP2 | >= 10M | 0.030% | 0.060% |
+| VIP3 | >= 20M | 0.020% | 0.050% |
+| VIP4 | >= 100M | 0.015% | 0.040% |
+| VIP5 | >= 200M | 0.010% | 0.035% |
+
+### USDT-Margined Swap (Perpetual) Fees
+
+| Tier | 30d Volume (USD) | Maker | Taker |
+|------|------------------|-------|-------|
+| VIP0 | < 5M | 0.020% | 0.050% |
+| VIP1 | >= 5M | 0.015% | 0.045% |
+| VIP2 | >= 10M | 0.010% | 0.040% |
+| VIP3 | >= 20M | 0.008% | 0.035% |
+| VIP4 | >= 100M | 0.005% | 0.030% |
+| VIP5 | >= 200M | 0.002% | 0.025% |
+
+### Coin-Margined Swap / Futures Fees
+
+| Tier | 30d Volume (USD) | Maker | Taker |
+|------|------------------|-------|-------|
+| VIP0 | < 5M | 0.020% | 0.050% |
+| VIP1 | >= 5M | 0.015% | 0.045% |
+| VIP2 | >= 10M | 0.010% | 0.040% |
+| VIP3 | >= 20M | 0.008% | 0.035% |
+| VIP4 | >= 100M | 0.005% | 0.030% |
+| VIP5 | >= 200M | 0.002% | 0.025% |
+
+### Fee Calculation Notes
+
+- **Maker** = limit order that adds liquidity to the orderbook (not immediately matched)
+- **Taker** = market order or limit order that immediately matches
+- For **cost estimation**, assume taker fees unless the skill specifically uses limit orders
+- Fees are deducted from the received asset (spot) or from margin (derivatives)
+
+### Fee Formula
+
+```
+fee_usd = notional_size_usd * fee_rate
+
+# Round-trip cost (open + close)
+roundtrip_fee_usd = notional_size_usd * (entry_fee_rate + exit_fee_rate)
+roundtrip_fee_bps = (entry_fee_rate + exit_fee_rate) * 10000
+```
+
+**Quick Reference: Round-Trip Taker Fees (bps):**
+
+| Tier | Spot RT | Swap RT |
+|------|---------|---------|
+| VIP0 | 16.0 bps | 10.0 bps |
+| VIP1 | 14.0 bps | 9.0 bps |
+| VIP2 | 12.0 bps | 8.0 bps |
+| VIP3 | 10.0 bps | 7.0 bps |
+| VIP4 | 8.0 bps | 6.0 bps |
+| VIP5 | 7.0 bps | 5.0 bps |
+
+---
+
+## 11. OKX Withdrawal Fee Tables
+
+Withdrawal fees are flat (not percentage-based) and vary by asset and network.
+
+### BTC Withdrawals
+
+| Network | Fee | Min Withdrawal |
+|---------|-----|---------------|
+| Bitcoin (BTC) | 0.0001 BTC | 0.001 BTC |
+| Lightning Network | 0.000001 BTC | 0.000001 BTC |
+
+### ETH Withdrawals
+
+| Network | Fee | Min Withdrawal |
+|---------|-----|---------------|
+| Ethereum (ERC-20) | 0.00035 ETH | 0.001 ETH |
+| Arbitrum One | 0.0001 ETH | 0.0001 ETH |
+| Optimism | 0.00004 ETH | 0.0001 ETH |
+| Base | 0.00004 ETH | 0.0001 ETH |
+| zkSync Era | 0.000065 ETH | 0.0001 ETH |
+| Linea | 0.00015 ETH | 0.0001 ETH |
+
+### USDT Withdrawals
+
+| Network | Fee | Min Withdrawal |
+|---------|-----|---------------|
+| Ethereum (ERC-20) | 3.0 USDT | 10.0 USDT |
+| Tron (TRC-20) | 1.0 USDT | 0.1 USDT |
+| Polygon | 0.8 USDT | 0.1 USDT |
+| Arbitrum One | 0.1 USDT | 0.1 USDT |
+| Optimism | 0.1 USDT | 0.1 USDT |
+| Base | 0.1 USDT | 0.1 USDT |
+| Solana | 1.0 USDT | 1.0 USDT |
+| BSC (BEP-20) | 0.3 USDT | 10.0 USDT |
+| Avalanche C-Chain | 1.0 USDT | 1.0 USDT |
+| TON | 0.5 USDT | 0.1 USDT |
+
+### USDC Withdrawals
+
+| Network | Fee | Min Withdrawal |
+|---------|-----|---------------|
+| Ethereum (ERC-20) | 3.0 USDC | 10.0 USDC |
+| Polygon | 0.8 USDC | 0.1 USDC |
+| Arbitrum One | 0.1 USDC | 0.1 USDC |
+| Optimism | 0.1 USDC | 0.1 USDC |
+| Base | 0.1 USDC | 0.1 USDC |
+| Solana | 1.0 USDC | 1.0 USDC |
+| BSC (BEP-20) | 0.3 USDC | 10.0 USDC |
+| Avalanche C-Chain | 1.0 USDC | 1.0 USDC |
+
+### SOL Withdrawals
+
+| Network | Fee | Min Withdrawal |
+|---------|-----|---------------|
+| Solana | 0.008 SOL | 0.1 SOL |
+
+### Other Major Assets
+
+| Asset | Network | Fee | Min Withdrawal |
+|-------|---------|-----|---------------|
+| BNB | BSC (BEP-20) | 0.0005 BNB | 0.01 BNB |
+| MATIC | Polygon | 0.1 MATIC | 0.1 MATIC |
+| AVAX | Avalanche C-Chain | 0.01 AVAX | 0.1 AVAX |
+| ARB | Arbitrum One | 0.1 ARB | 1.0 ARB |
+| OP | Optimism | 0.1 OP | 1.0 OP |
+| OKB | X Layer | 0.001 OKB | 0.01 OKB |
+
+### Withdrawal Fee Notes
+
+- Withdrawal fees are **flat amounts**, not percentages.
+- Fees are updated periodically based on network conditions.
+- Always verify current fees via OKX API before calculating costs.
+- Internal transfers between OKX accounts (sub-accounts) are **free**.
+- Deposits to OKX are **free** (user only pays network gas).
+
+---
+
+## 12. Gas Benchmarks per Chain
+
+Approximate gas costs for a typical DEX swap transaction.
+
+| Chain | Avg Gas Price | Swap Gas Limit | Approx Cost (USD) | Native Token |
+|-------|--------------|----------------|-------------------|-------------|
+| Ethereum | 20-50 gwei | 150,000-300,000 | $5.00-$30.00 | ETH |
+| Arbitrum | 0.1-0.5 gwei | 1,000,000-2,000,000 | $0.10-$0.50 | ETH |
+| Base | 0.005-0.02 gwei | 150,000-300,000 | $0.01-$0.05 | ETH |
+| Optimism | 0.005-0.02 gwei | 150,000-300,000 | $0.01-$0.05 | ETH |
+| Polygon | 30-100 gwei | 150,000-300,000 | $0.01-$0.05 | MATIC |
+| BSC | 3-5 gwei | 150,000-300,000 | $0.10-$0.30 | BNB |
+| Avalanche | 25-30 nAVAX | 150,000-300,000 | $0.02-$0.10 | AVAX |
+| Solana | N/A (lamports) | N/A (compute units) | $0.001-$0.01 | SOL |
+| X Layer | 0.01-0.05 gwei | 150,000-300,000 | $0.001-$0.01 | OKB |
+
+### Gas Notes
+
+- **Ethereum L1** gas is by far the most expensive; avoid for small trades.
+- **L2 costs** include a small L1 data posting fee that can spike during L1 congestion.
+- **Multi-hop swaps** (going through multiple pools) use significantly more gas.
+- **Approval transactions** (first-time token approvals) add ~46,000 gas on EVM chains.
+- Gas prices fluctuate significantly; always fetch real-time estimates.
+
+### Cost Efficiency by Chain (for $10,000 trade)
+
+| Chain | Gas as % of Trade | Practical Minimum Trade |
+|-------|-------------------|------------------------|
+| Ethereum | 0.05-0.30% | $5,000+ |
+| Arbitrum | 0.001-0.005% | $100+ |
+| Base | 0.0001-0.0005% | $50+ |
+| Solana | 0.00001-0.0001% | $10+ |
+| BSC | 0.001-0.003% | $100+ |
+| Polygon | 0.0001-0.0005% | $50+ |
+
+### Solana Gas Details
+
+- Base fee: 5,000 lamports (0.000005 SOL)
+- Priority fee: 10,000-500,000 lamports depending on congestion
+- Compute budget: 200,000-1,400,000 compute units
+
+### Gas Price Fallback Chain
+
+```
+1. Try: onchainos onchain-gateway gas --chain {chain}
+2. If fails: use benchmark midpoint from table above
+   - Ethereum: 35 gwei
+   - Arbitrum: 0.3 gwei
+   - Base: 0.01 gwei
+   - Solana: 55,000 lamports
+3. Flag confidence as "medium" when using fallback
+```
+
+---
+
+## 13. DEX Protocol Fee Tables
+
+Fees charged by the DEX protocol itself (separate from gas). These are typically included in the quoted swap price from aggregators.
+
+### Uniswap (Ethereum, Arbitrum, Base, Polygon, Optimism, BSC)
+
+| Pool Tier | Fee | Typical Use |
+|-----------|-----|------------|
+| 0.01% | 1 bp | Stable-stable pairs (USDC/USDT) |
+| 0.05% | 5 bps | Stable pairs, high-correlation pairs |
+| 0.30% | 30 bps | Standard pairs (ETH/USDC, WBTC/ETH) |
+| 1.00% | 100 bps | Exotic / low-liquidity pairs |
+
+### Curve Finance (Ethereum, Arbitrum, Polygon, others)
+
+| Pool Type | Fee |
+|-----------|-----|
+| Stablecoin pools | 0.01-0.04% |
+| Crypto pools (v2) | 0.04-0.40% |
+| Factory pools | Variable |
+
+### PancakeSwap (BSC, Ethereum, Arbitrum, Base)
+
+| Pool Tier | Fee |
+|-----------|-----|
+| V3 (stable) | 0.01% |
+| V3 (standard) | 0.25% |
+| V3 (exotic) | 1.00% |
+| V2 | 0.25% |
+
+### Jupiter (Solana)
+
+- Jupiter itself charges **no protocol fee** (aggregator layer)
+- Underlying pool fees vary:
+  - Orca Whirlpools: 0.01%-2.00% (tier-based)
+  - Raydium: 0.25% (standard), 0.01% (concentrated)
+  - Meteora: 0.01%-1.00% (dynamic)
+- Route optimization selects the best fee-adjusted path automatically
+
+### DEX Fee Notes
+
+- **Aggregator quotes already include DEX fees** in the output amount. Do not double-count.
+- When comparing CEX vs DEX prices, the DEX price is already net of protocol fees.
+- The OKX DEX API aggregates across multiple DEX protocols and returns the best net quote.
+- Some protocols have **dynamic fees** that adjust based on volatility.
+
+---
+
+## 14. Bridge Fee Tables
+
+Typical fees for cross-chain asset transfers. Highly variable by bridge, route, and conditions.
+
+### Major Bridge Protocols
+
+| Bridge | Typical Fee Range | Speed | Notes |
+|--------|------------------|-------|-------|
+| OKX Bridge (via DEX API) | 0-0.1% | 1-15 min | Aggregates multiple bridges |
+| Across Protocol | 0.04-0.12% | 1-5 min | Fast, uses relayers |
+| Stargate | 0.06% | 5-15 min | LayerZero-based |
+| Hop Protocol | 0.05-0.20% | 2-10 min | Uses AMMs |
+| Synapse | 0.05-0.15% | 5-15 min | Multi-chain AMM |
+| Native Bridges | Free (gas only) | 7 min - 7 days | Slowest, cheapest |
+
+### Native Bridge Wait Times
+
+| Route | Deposit Time | Withdrawal Time |
+|-------|-------------|-----------------|
+| Ethereum -> Arbitrum | ~10 min | ~7 days (challenge period) |
+| Ethereum -> Optimism | ~10 min | ~7 days (challenge period) |
+| Ethereum -> Base | ~10 min | ~7 days (challenge period) |
+| Ethereum -> Polygon | ~10 min | ~30 min (PoS bridge) |
+| Ethereum -> BSC | N/A | N/A (use 3rd party) |
+
+### Bridge Fee Notes
+
+- **OKX withdrawal is often cheaper than bridging** for moving assets from CEX to another chain. Withdraw directly to the target chain when supported.
+- Bridge fees include: protocol fee + gas on source chain + gas on destination chain.
+- For large amounts (>$100K), verify bridge liquidity on the destination chain to avoid high slippage.
+- When possible, avoid bridging altogether by using native CEX withdrawal to the target chain.
+
+### CEX Withdrawal vs Bridge Comparison
+
+When moving USDT from Ethereum to Arbitrum:
+
+| Method | Cost | Time |
+|--------|------|------|
+| OKX withdraw to Arbitrum directly | 0.1 USDT | 1-5 min |
+| Bridge via Across | ~$2-5 (0.04-0.1%) + gas | 1-5 min |
+| Bridge via native bridge | Gas only (~$15-30) | ~10 min + 7 days |
+
+**Recommendation:** Always prefer direct CEX withdrawal to target chain when possible. It is almost always the cheapest and fastest route.
+
+---
+
+## 15. Cost Summary for Common Trade Patterns
+
+### Pattern A: CEX-DEX Arbitrage (Buy CEX, Sell DEX on Arbitrum)
+
+```
+Trade size: $50,000
+
+CEX buy (VIP1 taker):         $35.00  (7.0 bps)
+CEX withdrawal (ETH to Arb):   $0.34  (0.0001 ETH)
+DEX sell gas (Arbitrum):        $0.30
+DEX slippage:                  $10.00  (est. 2 bps)
+                               ------
+Total one-way cost:            $45.64  (9.1 bps)
+```
+
+### Pattern B: Funding Harvest (Spot long + Perp short)
+
+```
+Position size: $100,000
+
+Spot buy (VIP1 taker):        $70.00  (7.0 bps)
+Perp short (VIP1 taker):      $45.00  (4.5 bps)
+                               ------
+Entry cost:                   $115.00  (11.5 bps)
+Exit cost (same):             $115.00  (11.5 bps)
+Round-trip:                   $230.00  (23.0 bps)
+```
+
+### Pattern C: Basis Trade (Spot long + Futures short)
+
+```
+Position size: $100,000
+
+Spot buy (VIP1 taker):        $70.00  (7.0 bps)
+Futures short (VIP1 taker):   $45.00  (4.5 bps)
+                               ------
+Entry cost:                   $115.00  (11.5 bps)
+Exit at expiry: futures settle automatically, close spot:
+  Spot sell:                   $70.00  (7.0 bps)
+                               ------
+Total cost:                   $185.00  (18.5 bps)
+```
+
+---
+
+## 16. Supported Chains Table
+
+| Chain | chainIndex (OKX) | Native Token | Native Token Address (DEX) |
+|-------|------------------|-------------|---------------------------|
+| Ethereum | 1 | ETH | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` |
+| BSC | 56 | BNB | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` |
+| Polygon | 137 | MATIC | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` |
+| Arbitrum One | 42161 | ETH | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` |
+| Optimism | 10 | ETH | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` |
+| Base | 8453 | ETH | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` |
+| Avalanche C-Chain | 43114 | AVAX | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` |
+| Solana | 501 | SOL | `11111111111111111111111111111111` |
+| X Layer | 196 | OKB | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` |
+
+### Critical Warnings
+
+**Solana Native Token:**
+- `11111111111111111111111111111111` = native SOL (System Program ID) -- use this
+- `So11111111111111111111111111111111111111112` = Wrapped SOL (wSOL) -- do NOT use for native
+
+**EVM Native Token:** All EVM chains use `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` as the placeholder for native tokens.
+
+**Address Formatting:**
+- EVM: lowercase required
+- Solana: base58, case-sensitive
+
+**BSC USDT Warning:** BSC USDT has **18 decimals**, unlike most other chains where it has 6 decimals. Always check the token's `decimals` value before encoding amounts.
+
+---
+
+## 17. Safety Checks
+
+### Profitability Safety Checks (#10-11 from Pre-Trade Checklist)
+
+| # | Check | Tool | BLOCK Threshold | WARN Threshold | Error Code |
+|---|-------|------|----------------|----------------|------------|
+| 10 | Gas vs profit ratio | `onchain-gateway gas` + calculation | Gas cost > 30% of gross spread | Gas cost > 10% of spread | `NOT_PROFITABLE` |
+| 11 | Net profitability | `profitability-calculator` | `net_profit <= 0` | `profit_to_cost_ratio < 2` | `NOT_PROFITABLE` |
+
+### Full Pre-Trade Safety Checklist (context)
+
+Every skill runs through these checks **in order** before producing a recommendation:
+
+| # | Check | BLOCK Threshold | WARN Threshold | Error Code |
+|---|-------|----------------|----------------|------------|
+| 1 | MCP connectivity | Server not reachable | -- | `MCP_NOT_CONNECTED` |
+| 2 | Authentication | `authenticated: false` | -- | `AUTH_FAILED` |
+| 3 | Data freshness | > 60s stale (> 5s for arb) | > 30s stale | `DATA_STALE` |
+| 4 | Token honeypot | `is_honeypot === "1"` | -- | `SECURITY_BLOCKED` |
+| 5 | Token tax rate | buy > 5% OR sell > 10% | buy > 1% | `SECURITY_BLOCKED` |
+| 6 | Holder concentration | Top 10 non-contract > 80% | > 50% | `SECURITY_BLOCKED` |
+| 7 | Contract verified | `is_open_source === "0"` | -- | `SECURITY_BLOCKED` |
+| 8 | Liquidity depth | `liquidityUsd < $100,000` | `< $500,000` | `INSUFFICIENT_LIQUIDITY` |
+| 9 | Price impact | `priceImpactPercent > 2%` | `> 0.5%` | `INSUFFICIENT_LIQUIDITY` |
+| 10 | Gas vs profit ratio | Gas > 30% of spread | Gas > 10% of spread | `NOT_PROFITABLE` |
+| 11 | Net profitability | `net_profit <= 0` | `profit_to_cost_ratio < 2` | `NOT_PROFITABLE` |
 
 ### BLOCK Conditions
 
@@ -603,7 +1155,7 @@ min_spread_bps = total_costs_usd / size_usd * 10000
 
 ---
 
-## 11. Error Codes
+## 18. Error Codes
 
 | Code | Condition | User Message (ZH) | User Message (EN) |
 |------|-----------|-------------------|-------------------|
@@ -614,10 +1166,14 @@ min_spread_bps = total_costs_usd / size_usd * 10000
 | `ORDERBOOK_EMPTY` | Orderbook returned no levels | 訂單簿為空或流動性不足：{instId} | Orderbook empty or insufficient liquidity: {instId} |
 | `NOT_PROFITABLE` | Net profit <= 0 | 扣除所有成本後淨利潤為負（{net_pnl}），不建議執行 | Net profit is negative after all costs ({net_pnl}). Not recommended. |
 | `MARGIN_TOO_THIN` | Profit-to-cost < 2.0 | 利潤空間偏薄（利潤/成本比 = {ratio}x），風險較高 | Thin margin (profit/cost = {ratio}x). Higher execution risk. |
+| `MCP_NOT_CONNECTED` | MCP server unreachable | MCP 伺服器無法連線，請檢查 okx-trade-mcp 是否啟動 | MCP server unreachable. Check if okx-trade-mcp is running. |
+| `AUTH_FAILED` | API key invalid or expired | API 認證失敗，請檢查 OKX API 金鑰設定 | API authentication failed. Check OKX API key configuration. |
+| `DATA_STALE` | Price/market data too old | 市場數據已過期（超過 {threshold} 秒），正在重新獲取... | Market data stale (> {threshold}s). Refetching... |
+| `RATE_LIMITED` | API rate limit hit | API 請求頻率超限，{wait}秒後重試 | API rate limit reached. Retrying in {wait}s. |
 
 ---
 
-## 12. Cross-Skill Integration
+## 19. Cross-Skill Integration
 
 ### Input Contract: Who Calls This Skill
 
@@ -665,9 +1221,9 @@ Output to user (with cost breakdown)
 
 ---
 
-## 13. Output Templates
+## 20. Output Templates
 
-### 13.1 Estimate / Breakdown Output
+### 20.1 Estimate / Breakdown Output
 
 ```
 ══════════════════════════════════════════
@@ -723,7 +1279,7 @@ VIP 等級: VIP0
 ══════════════════════════════════════════
 ```
 
-### 13.2 Min-Spread Output
+### 20.2 Min-Spread Output
 
 ```
 ══════════════════════════════════════════
@@ -750,7 +1306,7 @@ VIP 等級: VIP0
 ══════════════════════════════════════════
 ```
 
-### 13.3 Sensitivity Output
+### 20.3 Sensitivity Output
 
 ```
 ══════════════════════════════════════════
@@ -782,7 +1338,7 @@ VIP 等級: VIP0
 
 ---
 
-## 14. Conversation Examples
+## 21. Conversation Examples
 
 ### Example 1: Direct Profitability Check (CEX-DEX Arbitrage)
 
@@ -806,7 +1362,7 @@ VIP 等級: VIP0
      → gasPriceGwei: "28"
    - Gas limit benchmark: 200,000 (Uniswap swap)
    - Native token price: $3,412.50 (from ticker)
-   - Withdrawal fee: 0.00035 ETH = $1.19 (fee-schedule.md)
+   - Withdrawal fee: 0.00035 ETH = $1.19
 
 4. Compute:
    gross_spread = (3419.80 - 3412.50) / 3412.50 * 5000 = $10.69
@@ -1016,7 +1572,7 @@ Gas 費是主要差異來源（20.7 bps vs 1.6 bps）。
 
 ---
 
-## 15. Implementation Notes
+## 22. Implementation Notes
 
 ### Orderbook Depth Parsing
 
@@ -1044,28 +1600,28 @@ When auto-calculating slippage from `market_get_orderbook`:
 
 ```
 1. If user provides explicit fee_rate → use it
-2. If vip_tier + instrument_type provided → lookup from fee-schedule.md
+2. If vip_tier + instrument_type provided → lookup from fee tables above
 3. Default: VIP0 taker rate for the instrument type
    - Spot: 0.080%
    - Swap/Futures: 0.050%
 ```
 
-### Gas Price Fallback Chain
-
-```
-1. Try: onchainos onchain-gateway gas --chain {chain}
-2. If fails: use benchmark midpoint from fee-schedule.md Section 3
-   - Ethereum: 35 gwei
-   - Arbitrum: 0.3 gwei
-   - Base: 0.01 gwei
-   - Solana: 55,000 lamports
-3. Flag confidence as "medium" when using fallback
-```
-
 ---
 
-## 16. Changelog
+## 23. Changelog
 
 | Date | Version | Changes |
 |------|---------|---------|
 | 2026-03-09 | 1.0.0 | Initial release. 4 commands: estimate, breakdown, min-spread, sensitivity. |
+| 2026-03-09 | 1.1.0 | Inlined all reference file content for OpenClaw/Lark compatibility. |
+
+---
+
+**Note:** All content from reference files has been inlined above for OpenClaw/Lark compatibility. The files below exist for human maintenance only.
+
+| File | Relevance to This Skill |
+|------|------------------------|
+| `references/formulas.md` | Calculation formulas (Sections 1-2, 7) |
+| `references/fee-schedule.md` | OKX fee tiers, withdrawal fees, gas benchmarks, DEX fees, bridge fees |
+| `references/chain-reference.md` | Supported chains, native addresses, chainIndex mapping |
+| `references/safety-checks.md` | Pre-trade safety checklist, profitability checks #10-11 |

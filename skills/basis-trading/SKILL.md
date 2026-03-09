@@ -68,10 +68,45 @@ Metric labels may use English abbreviations regardless of language:
 | Mode display | Every output header shows `[DEMO]` or `[LIVE]` |
 | Read-only | This skill performs **zero** write operations -- no trades, no transfers |
 | Recommendation header | Always show `[RECOMMENDATION ONLY -- 不會自動執行]` |
-| Live switch | Requires explicit user confirmation per protocol in `references/safety-checks.md` |
+| Live switch | Requires explicit user confirmation (see Account Safety Protocol below) |
 | Leverage | **1x ONLY** -- fully collateralized. No leverage allowed for basis trades. |
 
 Even in `[LIVE]` mode, this skill only reads market data. There is no risk of accidental execution.
+
+### Account Safety Protocol (Inlined)
+
+The system defaults to **demo mode** at all times. Switching to live mode requires explicit user action.
+
+**Demo Mode (Default):**
+- MCP server config: `okx-DEMO-simulated-trading`
+- All prices and positions are simulated
+- All outputs include header: `[DEMO]`
+- **No confirmation required to use demo mode**
+
+**Live Mode:**
+- MCP server config: `okx-LIVE-trading`
+- Real market data and real account positions
+- All outputs include header: `[LIVE]`
+- Recommendations are still analysis-only (no auto-execution)
+
+**Switching from Demo to Live:**
+1. User explicitly says "live", "真實帳戶", "real account", or similar
+2. System confirms the switch with a clear warning:
+   - "您正在切換至真實帳戶模式。所有數據將來自您的真實 OKX 帳戶。建議仍為分析建議，不會自動執行交易。請確認：輸入 '確認' 或 'confirm' 繼續"
+3. User must reply with explicit confirmation
+4. System verifies authentication via `system_get_capabilities`
+5. If authenticated: switch and display `[LIVE]` header
+6. If NOT authenticated: show `AUTH_FAILED` error, remain in demo
+
+**Session Rules:**
+
+| Rule | Description |
+|------|-------------|
+| Default on startup | Always demo mode |
+| Timeout | If no activity for 30 minutes, revert to demo mode |
+| Error fallback | If live mode encounters AUTH_FAILED, revert to demo with notification |
+| Header requirement | EVERY output must show `[DEMO]` or `[LIVE]` -- no exceptions |
+| No auto-execution | Even in live mode, skills only provide recommendations. `[RECOMMENDATION ONLY]` header is always present. |
 
 ---
 
@@ -487,15 +522,24 @@ Parse user message to extract:
 
 #### Basis Percentage
 
-> Reference: `references/formulas.md` Section 4 -- Basis Percentage
-
 ```
 basis_pct = (futures_price - spot_price) / spot_price
 
-Example:
+Variables:
+  futures_price = Current price of the futures contract (e.g., BTC-USD-260627)
+  spot_price    = Current spot price
+
+Positive basis (contango) = futures > spot. Negative basis (backwardation) = futures < spot.
+Basis captures both interest rate expectations and market sentiment.
+
+Worked Example:
   futures_price = 88,250.00  (BTC-USD-260627)
   spot_price    = 87,500.00
-  basis_pct = (88250 - 87500) / 87500 = 0.00857 = 0.857%
+
+  basis_pct = (88250 - 87500) / 87500
+            = 750 / 87500
+            = 0.00857
+            = 0.857%
 ```
 
 #### Days to Expiry
@@ -508,31 +552,43 @@ Round down to integer. Filter out contracts with DTE < min_days_to_expiry.
 
 #### Annualized Basis Yield
 
-> Reference: `references/formulas.md` Section 4 -- Annualized Basis Yield
-
 ```
 annualized_yield = basis_pct * (360 / days_to_expiry)
 
-Example:
+Variables:
+  basis_pct       = Current basis percentage (from above)
+  days_to_expiry  = Calendar days until futures settlement
+
+Uses 360-day convention (money market standard). Some sources use 365.
+Annualization assumes you can roll at the same basis, which is not guaranteed.
+
+Worked Example:
   basis_pct = 0.857%
   days_to_expiry = 110
-  annualized_yield = 0.00857 * (360 / 110) = 0.02804 = 2.80%
 
-Note: Uses 360-day convention (money market standard).
+  annualized_yield = 0.00857 * (360 / 110)
+                   = 0.00857 * 3.2727
+                   = 0.02804
+                   = 2.80%
 ```
 
 #### Net Yield After Fees and Margin Cost
 
-> Reference: `references/formulas.md` Section 4 -- Net Yield After Fees and Margin Cost
-
 ```
-annualized_entry_exit_fees = (entry_fee_bps + exit_fee_bps) / 10000 * (360 / days_to_expiry)
-margin_cost = borrow_rate * margin_utilization  (0 if fully funded)
 net_yield = annualized_yield - annualized_entry_exit_fees - margin_cost
 
-Entry fees (basis trade):
-  spot_buy (taker)     = spot_taker_rate  (from fee-schedule.md)
-  futures_short (taker) = futures_taker_rate  (from fee-schedule.md)
+annualized_entry_exit_fees = (entry_fee_bps + exit_fee_bps) / 10000 * (360 / days_to_expiry)
+margin_cost = borrow_rate * margin_utilization
+
+Variables:
+  entry_fee_bps       = Total entry fee in bps (spot + futures leg)
+  exit_fee_bps        = Total exit fee in bps (spot + futures leg)
+  borrow_rate         = Annualized cost of margin borrowing
+  margin_utilization  = Fraction of position that is borrowed (e.g., 0.5 for 2x)
+
+Entry fees (basis trade) -- use OKX Fee Schedule:
+  spot_buy (taker)       = spot taker rate per VIP tier
+  futures_short (taker)  = futures taker rate per VIP tier
   entry_fee_bps = (spot_taker_rate + futures_taker_rate) * 10000
 
 Exit fees (at expiry):
@@ -540,97 +596,245 @@ Exit fees (at expiry):
   spot_sell (taker) = spot_taker_rate
   exit_fee_bps = spot_taker_rate * 10000
 
-Example (VIP1):
-  entry_fee_bps = (0.0007 + 0.00045) * 10000 = 11.5 bps
-  exit_fee_bps  = 0.0007 * 10000 = 7.0 bps
-  days_to_expiry = 110
-
-  annualized_fees = (11.5 + 7.0) / 10000 * (360/110) = 0.00185 * 3.2727 = 0.605%
+Worked Example (VIP1):
   annualized_yield = 2.80%
-  margin_cost = 0% (fully funded)
-  net_yield = 2.80% - 0.605% - 0% = 2.195%
+  entry_fee_bps = 14  (7 bps spot taker + 7 bps futures taker, VIP1)
+  exit_fee_bps  = 14
+  days_to_expiry = 110
+  borrow_rate = 5.00%
+  margin_utilization = 0.0  (fully funded, no borrowing)
+
+  annualized_entry_exit_fees = (14 + 14) / 10000 * (360 / 110)
+                             = 0.0028 * 3.2727
+                             = 0.917%
+
+  net_yield = 2.80% - 0.917% - 0.00%
+            = 1.88%
+
+Caveats:
+  - For short-duration contracts, fees eat a larger % of basis.
+  - Margin cost only applies if using borrowed funds or cross-margin with utilization.
 ```
 
 #### Roll Yield Comparison
 
-> Reference: `references/formulas.md` Section 4 -- Roll Yield
-
 ```
+roll_yield = (near_basis_pct - far_basis_pct) * (360 / days_between_expiries)
+
+Alternatively, when rolling from expiring contract to next:
+  roll_yield = (new_futures_price - old_futures_price) / spot_price - (near_basis already captured)
+
+Variables:
+  near_basis_pct        = Basis of the expiring (near) contract
+  far_basis_pct         = Basis of the next (far) contract
+  days_between_expiries = Days between the two expiry dates
+
 For roll decision, compare annualized net yields:
   current_net_yield = current_annualized - current_fees
   next_net_yield    = next_annualized - next_fees - roll_cost_annualized
 
-roll_cost_annualized = (roll_cost / size_usd) * (360 / next_days_to_expiry)
+  roll_cost_annualized = (roll_cost / size_usd) * (360 / next_days_to_expiry)
 
-If next_net_yield > current_net_yield: recommend ROLL
-If next_net_yield <= current_net_yield: recommend HOLD_TO_EXPIRY
+  If next_net_yield > current_net_yield: recommend ROLL
+  If next_net_yield <= current_net_yield: recommend HOLD_TO_EXPIRY
+
+Worked Example:
+  near_basis_pct = 0.30%   (BTC-USD-260327, 18 days to expiry)
+  far_basis_pct  = 0.857%  (BTC-USD-260627, 110 days to expiry)
+  days_between_expiries = 92
+
+  In practice, you evaluate:
+    near_annualized = 0.30% * (360/18) = 6.00%
+    far_annualized  = 0.857% * (360/110) = 2.80%
+
+    If near_annualized > far_annualized, the near contract is richer.
+
+Caveats:
+  - Roll involves closing one position and opening another -- double the trading fees.
+  - If far contract has better annualized yield, rolling may be worthwhile despite fees.
+  - Always compare net annualized yields (after fees) for roll decisions.
 ```
 
 ### Step 4: Format Output
 
-Use output templates from `references/output-templates.md`:
+Use these output templates:
 
 - **Header:** Global Header Template (skill icon: Calendar) with mode
-- **Body:** Term Structure Template (Section 6) for `curve` command
+- **Body:** Term Structure Template for `curve` command
 - **Footer:** Next Steps Template
 
----
-
-## 9. Key Formulas
-
-All formulas are canonical. For full derivations and worked examples, see `references/formulas.md` Section 4.
-
-### Basis Percentage
-
-```
-basis_pct = (futures_price - spot_price) / spot_price
-
-Positive = contango (futures > spot) -- normal market, earnable premium
-Negative = backwardation (futures < spot) -- unusual, investigate
-```
-
-### Annualized Basis Yield
-
-```
-annualized_yield = basis_pct * (360 / days_to_expiry)
-
-Uses 360-day convention (money market standard).
-```
-
-### Net Yield
-
-```
-net_yield = annualized_yield - annualized_fee_drag - margin_cost
-
-annualized_fee_drag = (entry_fee_bps + exit_fee_bps) / 10000 * (360 / days_to_expiry)
-margin_cost = borrow_rate_annual * margin_utilization
-```
-
-### Break-Even Basis
-
-```
-break_even_basis_bps = total_cost / size_usd * 10000
-
-Minimum basis (in bps) needed for the trade to break even after all costs.
-```
-
-### Roll Yield
-
-```
-Compare net annualized yields:
-  near_annualized = near_basis_pct * (360 / near_DTE) - near_fees
-  far_annualized  = far_basis_pct * (360 / far_DTE) - far_fees - roll_cost_ann
-
-Recommendation based on net yield comparison.
-```
+(All templates are inlined in Section 13 below.)
 
 ---
 
-## 10. Safety Checks
+## 9. OKX Fee Schedule (Inlined)
 
-> Cross-reference: `references/safety-checks.md` Section 2 -- basis-trading limits.
+### Spot Trading Fees
 
-### Hard Limits
+| Tier | 30d Volume (USD) | Maker | Taker |
+|------|------------------|-------|-------|
+| VIP0 | < 5M | 0.060% | 0.080% |
+| VIP1 | >= 5M | 0.040% | 0.070% |
+| VIP2 | >= 10M | 0.030% | 0.060% |
+| VIP3 | >= 20M | 0.020% | 0.050% |
+| VIP4 | >= 100M | 0.015% | 0.040% |
+| VIP5 | >= 200M | 0.010% | 0.035% |
+
+### Coin-Margined Swap / Futures Fees
+
+| Tier | 30d Volume (USD) | Maker | Taker |
+|------|------------------|-------|-------|
+| VIP0 | < 5M | 0.020% | 0.050% |
+| VIP1 | >= 5M | 0.015% | 0.045% |
+| VIP2 | >= 10M | 0.010% | 0.040% |
+| VIP3 | >= 20M | 0.008% | 0.035% |
+| VIP4 | >= 100M | 0.005% | 0.030% |
+| VIP5 | >= 200M | 0.002% | 0.025% |
+
+### Fee Calculation Notes
+
+- **Maker** = limit order that adds liquidity to the orderbook (not immediately matched)
+- **Taker** = market order or limit order that immediately matches
+- For **cost estimation**, assume taker fees unless the skill specifically uses limit orders
+- Fees are deducted from the received asset (spot) or from margin (derivatives)
+
+### Fee Formula
+
+```
+fee_usd = notional_size_usd * fee_rate
+
+# Round-trip cost (open + close)
+roundtrip_fee_usd = notional_size_usd * (entry_fee_rate + exit_fee_rate)
+roundtrip_fee_bps = (entry_fee_rate + exit_fee_rate) * 10000
+```
+
+### Quick Reference: Round-Trip Taker Fees (bps)
+
+| Tier | Spot RT | Swap RT |
+|------|---------|---------|
+| VIP0 | 16.0 bps | 10.0 bps |
+| VIP1 | 14.0 bps | 9.0 bps |
+| VIP2 | 12.0 bps | 8.0 bps |
+| VIP3 | 10.0 bps | 7.0 bps |
+| VIP4 | 8.0 bps | 6.0 bps |
+| VIP5 | 7.0 bps | 5.0 bps |
+
+### Pattern C: Basis Trade Cost Template
+
+```
+Position size: $100,000
+
+Spot buy (VIP1 taker):        $70.00  (7.0 bps)
+Futures short (VIP1 taker):   $45.00  (4.5 bps)
+                               ------
+Entry cost:                   $115.00  (11.5 bps)
+Exit at expiry: futures settle automatically, close spot:
+  Spot sell:                   $70.00  (7.0 bps)
+                               ------
+Total cost:                   $185.00  (18.5 bps)
+```
+
+---
+
+## 10. MCP Tool Specifications (Inlined)
+
+### market_get_ticker
+
+**Purpose:** Retrieve real-time ticker data for a single instrument -- last price, bid/ask, 24h volume and price range.
+
+| Param | Required | Default | Type | Description |
+|-------|----------|---------|------|-------------|
+| instId | Yes | -- | string | Instrument ID (e.g. `"BTC-USDT"`, `"ETH-USDT-SWAP"`, `"BTC-USD-260327"`) |
+
+**Return Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| last | string | Last traded price |
+| bidPx | string | Best bid price |
+| askPx | string | Best ask price |
+| open24h | string | Opening price 24 hours ago |
+| high24h | string | 24-hour high |
+| low24h | string | 24-hour low |
+| vol24h | string | 24-hour volume in base currency |
+| ts | string | Data timestamp in milliseconds since epoch |
+
+Rate Limit: 20 requests/second.
+
+### market_get_instruments (FUTURES)
+
+**Purpose:** List available trading instruments with contract specifications and trading rules.
+
+| Param | Required | Default | Type | Description |
+|-------|----------|---------|------|-------------|
+| instType | Yes | -- | string | Instrument type. For basis trading: `"FUTURES"` |
+| instId | No | -- | string | Filter by specific instrument ID |
+| uly | No | -- | string | Filter by underlying (e.g. `"BTC-USD"`) -- applies to derivatives only |
+
+**Return Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| instId | string | Instrument ID (e.g. `"BTC-USD-260327"`) |
+| instType | string | Instrument type |
+| uly | string | Underlying index |
+| settleCcy | string | Settlement currency |
+| ctVal | string | Contract value (face value of one contract) |
+| ctMult | string | Contract multiplier |
+| listTime | string | Listing time in ms since epoch |
+| expTime | string | Expiry time in ms since epoch (key for basis trading DTE calc) |
+| lever | string | Maximum leverage available |
+| tickSz | string | Tick size (minimum price increment) |
+| lotSz | string | Lot size (minimum order quantity increment) |
+| minSz | string | Minimum order size |
+
+Rate Limit: 20 requests/second.
+
+### market_get_funding_rate
+
+**Purpose:** Retrieve the current and predicted funding rate for perpetual swap instruments.
+
+| Param | Required | Default | Type | Description |
+|-------|----------|---------|------|-------------|
+| instId | Yes | -- | string | Perpetual swap instrument ID. **Must** end in `-SWAP` (e.g. `"BTC-USDT-SWAP"`). |
+
+**Return Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| fundingRate | string | Current period funding rate (e.g. `"0.0001"` = 0.01%) |
+| realizedRate | string | Last settled (realized) funding rate |
+| fundingTime | string | Next funding settlement time in ms since epoch |
+| nextFundingRate | string | Predicted next funding rate (may be empty) |
+| instId | string | Instrument ID echo |
+
+Rate Limit: 10 requests/second.
+
+**Important Notes:**
+- Every numeric value from OKX is a **string**. Always use `parseFloat()` before arithmetic.
+- All timestamps are in **milliseconds** since Unix epoch.
+- Instrument ID format for futures: `BTC-USD-260327` (expiry date suffix YYMMDD).
+
+---
+
+## 11. Safety Checks
+
+### Pre-Trade Safety Checklist
+
+Every skill runs through these checks **in order** before producing a recommendation. A BLOCK at any step halts the pipeline immediately.
+
+| # | Check | Tool | BLOCK Threshold | WARN Threshold | Error Code |
+|---|-------|------|----------------|----------------|------------|
+| 1 | MCP connectivity | `system_get_capabilities` | Server not reachable | -- | `MCP_NOT_CONNECTED` |
+| 2 | Authentication | `system_get_capabilities` | `authenticated: false` | -- | `AUTH_FAILED` |
+| 3 | Data freshness | Internal timestamp comparison | > 60s stale | > 30s stale | `DATA_STALE` |
+| 4 | Net profitability | Cost calculation | `net_profit <= 0` | `profit_to_cost_ratio < 2` | `NOT_PROFITABLE` |
+
+**Basis-trading-specific additional checks:**
+- Verify futures haven't expired
+- Min 14 days to expiry
+
+### Basis-Trading Risk Limits
 
 | Parameter | Default | Hard Cap | Description |
 |-----------|---------|----------|-------------|
@@ -662,55 +866,121 @@ Recommendation based on net yield comparison.
 
 ---
 
-## 11. Error Codes & Recovery
+## 12. Error Codes & Recovery
 
 | Code | Condition | User Message (ZH) | User Message (EN) | Recovery |
 |------|-----------|-------------------|-------------------|----------|
 | `MCP_NOT_CONNECTED` | okx-trade-mcp unreachable | MCP 伺服器無法連線。請確認 okx-trade-mcp 是否正在運行。 | MCP server unreachable. Check if okx-trade-mcp is running. | Verify config, restart server. |
+| `AUTH_FAILED` | API key invalid or expired | API 認證失敗，請檢查 OKX API 金鑰設定 | API authentication failed. Check OKX API key configuration. | Update `~/.okx/config.toml` |
 | `INSTRUMENT_NOT_FOUND` | No FUTURES instrument for the asset | 找不到 {asset} 的交割期貨合約。 | No delivery futures found for {asset}. | Suggest checking OKX supported instruments. |
 | `FUTURES_EXPIRED` | Contract expired or < min DTE | 期貨合約已到期或距到期不足 {min_days} 天 | Futures contract expired or < {min_days} days to expiry | Suggest next-expiry contract. |
 | `LEVERAGE_EXCEEDED` | Leverage > 1x requested | 基差交易僅允許 1x 槓桿（全額保證金） | Basis trading allows 1x leverage only (fully collateralized) | Inform user this is a hard rule. |
 | `TRADE_SIZE_EXCEEDED` | Trade size > hard cap | 交易金額 ${amount} 超過上限 ${limit} | Trade size ${amount} exceeds limit ${limit} | Cap at limit. |
 | `DATA_STALE` | Market data too old | 市場數據已過期，正在重新獲取... | Market data stale. Refetching... | Auto-retry once, then error. |
 | `RATE_LIMITED` | API rate limit hit | API 請求頻率超限，{wait}秒後重試 | API rate limit reached. Retrying in {wait}s. | Wait 1s, retry up to 3x. |
+| `NOT_PROFITABLE` | Net P&L is zero or negative | 扣除所有成本後淨利潤為負（{net_pnl}），不建議執行 | Net profit is negative after all costs ({net_pnl}). Not recommended. | Show full cost breakdown |
+| `MARGIN_TOO_THIN` | Profit-to-cost ratio < 2 | 利潤空間偏薄（利潤/成本比 = {ratio}），風險較高 | Thin margin (profit/cost ratio = {ratio}). Higher risk. | Display sensitivity analysis |
 
 ---
 
-## 12. Cross-Skill Integration
+## 13. Output Templates (Inlined)
 
-### Input: What This Skill Consumes
+### Global Header Template
 
-| Source Skill | Data | When |
-|-------------|------|------|
-| `price-feed-aggregator` | Spot price (`PriceSnapshot.venues[].price`) | Used for basis calculation in evaluate |
-| `profitability-calculator` | `ProfitabilityResult.total_costs_usd` | Entry/exit cost for net yield calc |
-
-### Output: What This Skill Produces
-
-| Consuming Skill | Data Provided | Usage |
-|----------------|---------------|-------|
-| `profitability-calculator` | TradeLeg[] with spot + futures legs, `hold_days` | Full cost analysis |
-| AGENTS.md Chain C | BasisScanResult -> profitability-calculator -> curve -> Output | Full basis trading pipeline |
-
-### Data Flow (Chain C from AGENTS.md)
+Used at the top of every skill output:
 
 ```
-1. basis-trading.scan
-   |  -> Fetches spot + futures prices from OKX
-   |  -> Calculates annualized basis
-   v
-2. profitability-calculator.estimate
-   |  -> Trading fee impact
-   v
-3. basis-trading.curve
-   |  -> Term structure visualization
-   v
-4. Output: Basis opportunities with yield curves
+══════════════════════════════════════════
+  {SKILL_ICON} {SKILL_NAME}
+  [{MODE}] [RECOMMENDATION ONLY -- 不會自動執行]
+══════════════════════════════════════════
+  Generated: {TIMESTAMP}
+  Data sources: {DATA_SOURCES}
+══════════════════════════════════════════
 ```
 
----
+For basis-trading: Skill icon = Calendar, Data sources = "OKX REST (spot + delivery futures)"
 
-## 13. Output Templates
+### Formatting Rules
+
+- Monetary: `+$1,234.56` or `-$1,234.56` (2 decimals, comma thousands)
+- Percentages: `12.5%` (1 decimal), APY/APR: 2 decimal places
+- Basis Points: integer only (e.g., `21 bps`)
+- Risk Levels: `[SAFE]`, `[WARN]`, `[BLOCK]`
+- Risk Gauge: `▓▓▓░░░░░░░ 3/10` (scale 1-10)
+- Sparklines: `▁▂▃▄▅▆▇█` for trend visualization
+- Timestamps: `YYYY-MM-DD HH:MM UTC`
+
+### Risk Gauge Template
+
+```
+── Risk Assessment ─────────────────────────
+
+  Overall Risk:  {RISK_GAUGE}  {RISK_SCORE}/10
+                 {RISK_LABEL}
+
+  Breakdown:
+  ├─ Execution Risk:   {EXEC_GAUGE}  {EXEC_SCORE}/10
+  │                    {EXEC_NOTE}
+  ├─ Market Risk:      {MKT_GAUGE}   {MKT_SCORE}/10
+  │                    {MKT_NOTE}
+  ├─ Smart Contract:   {SC_GAUGE}    {SC_SCORE}/10
+  │                    {SC_NOTE}
+  └─ Liquidity Risk:   {LIQ_GAUGE}   {LIQ_SCORE}/10
+                       {LIQ_NOTE}
+```
+
+Gauge format: `1/10: ▓░░░░░░░░░`, `5/10: ▓▓▓▓▓░░░░░`, `10/10: ▓▓▓▓▓▓▓▓▓▓`
+Risk labels: 1-2 LOW RISK, 3-4 MODERATE-LOW, 5-6 MODERATE, 7-8 ELEVATED, 9-10 HIGH RISK
+
+### Term Structure Template
+
+```
+── Basis Term Structure ────────────────────
+
+  {ASSET} Futures vs Spot
+  Spot Price: {SPOT_PRICE}
+
+  Contract        Price       Basis     Ann. Yield   DTE
+  ─────────────────────────────────────────────────────
+  {INST1_ID}     {INST1_PX}  {INST1_B}  {INST1_Y}   {INST1_DTE}
+  {INST2_ID}     {INST2_PX}  {INST2_B}  {INST2_Y}   {INST2_DTE}
+  {INST3_ID}     {INST3_PX}  {INST3_B}  {INST3_Y}   {INST3_DTE}
+  SWAP (perp)    {PERP_PX}   {PERP_B}   N/A         perp
+
+  Term Structure Shape: {SHAPE}
+  Curve: {SPARKLINE}
+
+  ── Net Yields (after VIP{TIER} fees) ─────
+  {INST1_ID}:  {INST1_NET_Y}  (break-even: {INST1_BE} days)
+  {INST2_ID}:  {INST2_NET_Y}  (break-even: {INST2_BE} days)
+  {INST3_ID}:  {INST3_NET_Y}  (break-even: {INST3_BE} days)
+```
+
+### Next Steps Template
+
+```
+══════════════════════════════════════════
+  Next Steps
+══════════════════════════════════════════
+
+  {STEP_1}
+  {STEP_2}
+  {STEP_3}
+
+  ── Related Commands ──────────────────────
+  {CMD_1}
+  {CMD_2}
+  {CMD_3}
+
+  ── Disclaimer ────────────────────────────
+  This is analysis only. No trades are executed automatically.
+  All recommendations require manual review and execution.
+  Past spreads/yields do not guarantee future results.
+  以上僅為分析建議，不會自動執行任何交易。
+  所有建議均需人工審核後手動操作。
+══════════════════════════════════════════
+```
 
 ### 13.1 Scan Output
 
@@ -742,8 +1012,6 @@ Recommendation based on net yield comparison.
 ```
 
 ### 13.2 Term Structure / Curve Output
-
-> Uses Term Structure Template from `references/output-templates.md` Section 6.
 
 ```
 ══════════════════════════════════════════
@@ -1133,7 +1401,41 @@ For a full scan across ~20 delivery contracts: ~25 ticker calls -- well within 2
 
 ---
 
-## 16. Reference Files
+## 16. Cross-Skill Integration
+
+### Input: What This Skill Consumes
+
+| Source Skill | Data | When |
+|-------------|------|------|
+| `price-feed-aggregator` | Spot price (`PriceSnapshot.venues[].price`) | Used for basis calculation in evaluate |
+| `profitability-calculator` | `ProfitabilityResult.total_costs_usd` | Entry/exit cost for net yield calc |
+
+### Output: What This Skill Produces
+
+| Consuming Skill | Data Provided | Usage |
+|----------------|---------------|-------|
+| `profitability-calculator` | TradeLeg[] with spot + futures legs, `hold_days` | Full cost analysis |
+| AGENTS.md Chain C | BasisScanResult -> profitability-calculator -> curve -> Output | Full basis trading pipeline |
+
+### Data Flow (Chain C from AGENTS.md)
+
+```
+1. basis-trading.scan
+   |  -> Fetches spot + futures prices from OKX
+   |  -> Calculates annualized basis
+   v
+2. profitability-calculator.estimate
+   |  -> Trading fee impact
+   v
+3. basis-trading.curve
+   |  -> Term structure visualization
+   v
+4. Output: Basis opportunities with yield curves
+```
+
+---
+
+## 17. Reference Files
 
 | File | Relevance to This Skill |
 |------|------------------------|
@@ -1143,10 +1445,13 @@ For a full scan across ~20 delivery contracts: ~25 ticker calls -- well within 2
 | `references/output-templates.md` | Term Structure Template (Section 6), Global Header, Next Steps |
 | `references/safety-checks.md` | Pre-trade checklist, per-strategy risk limits (basis-trading section) |
 
+> **Note:** All content from the above reference files has been inlined in this document for OpenClaw/Lark compatibility. The LLM does not need to read any external files.
+
 ---
 
-## 17. Changelog
+## 18. Changelog
 
 | Date | Version | Changes |
 |------|---------|---------|
 | 2026-03-09 | 1.0.0 | Initial release. 5 commands: scan, evaluate, curve, track, roll. |
+| 2026-03-09 | 1.1.0 | Inlined all external reference content for OpenClaw/Lark compatibility. |

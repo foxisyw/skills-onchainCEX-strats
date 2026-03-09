@@ -62,9 +62,33 @@ Metric labels may use English abbreviations regardless of language:
 | Mode display | Every output header shows `[DEMO]` or `[LIVE]` |
 | Read-only | This skill performs **zero** write operations — no trades, no transfers, no approvals |
 | Recommendation header | Always show `[RECOMMENDATION ONLY — 不會自動執行]` |
-| Live switch | Requires explicit user confirmation per protocol in `references/safety-checks.md` |
+| Live switch | Requires explicit user confirmation (see Live Switch Protocol below) |
 
 Even in `[LIVE]` mode, this skill only reads market data. There is no risk of accidental execution.
+
+### Live Switch Protocol
+
+```
+1. User explicitly says "live", "真實帳戶", "real account", or similar
+2. System confirms the switch with a clear warning:
+
+   You are switching to LIVE mode.
+   - All data will come from your real OKX account
+   - Recommendations are still analysis only, no auto-execution
+   - Please confirm: type "確認" or "confirm" to continue
+
+3. User must reply with explicit confirmation
+4. System verifies authentication via system_get_capabilities
+5. If authenticated: switch and display [LIVE] header
+6. If NOT authenticated: show AUTH_FAILED error, remain in demo
+```
+
+Session rules:
+- Default on startup: always demo mode
+- Timeout: if no activity for 30 minutes, revert to demo mode
+- Error fallback: if live mode encounters AUTH_FAILED, revert to demo with notification
+- Header requirement: EVERY output must show `[DEMO]` or `[LIVE]` — no exceptions
+- No auto-execution: even in live mode, skills only provide recommendations. The `[RECOMMENDATION ONLY]` header is always present.
 
 ---
 
@@ -143,7 +167,7 @@ price-feed-aggregator snapshot --assets BTC,ETH,SOL --venues okx-cex,okx-dex --c
 |-----------|------|----------|---------|-------------|-----------------|
 | `--assets` | string[] | Yes | — | Any valid symbol | Uppercase, comma-separated, max 20 items |
 | `--venues` | string[] | No | `["okx-cex","okx-dex"]` | `okx-cex`, `okx-dex`, `coingecko` | Must have >= 2 venues for spread calc; 1 venue allowed for price-only |
-| `--chains` | string[] | No | `["ethereum"]` | `ethereum`, `solana`, `base`, `arbitrum`, `bsc`, `polygon`, `xlayer` | Must be a supported chain (see `references/chain-reference.md`) |
+| `--chains` | string[] | No | `["ethereum"]` | `ethereum`, `solana`, `base`, `arbitrum`, `bsc`, `polygon`, `xlayer` | Must be a supported chain (see Supported Chains Table in Section 13) |
 | `--mode` | string | No | `"analysis"` | `analysis`, `arb` | `"arb"` enforces 5s staleness threshold instead of 60s |
 
 #### Return Schema
@@ -268,7 +292,7 @@ price-feed-aggregator monitor --assets ETH,SOL --threshold-bps 20 --duration-min
 | `--duration-min` | number | No | `30` | — | Min: 1, Max: 1440 (24h) |
 | `--check-interval-sec` | number | No | `15` | — | Min: 5, Max: 300 |
 | `--venues` | string[] | No | `["okx-cex","okx-dex"]` | `okx-cex`, `okx-dex`, `coingecko` | Must have >= 2 |
-| `--chains` | string[] | No | `["ethereum"]` | See chain reference | Must be supported |
+| `--chains` | string[] | No | `["ethereum"]` | See Supported Chains Table | Must be supported |
 
 #### Return Schema (per alert)
 
@@ -319,7 +343,7 @@ price-feed-aggregator history --asset BTC --lookback-hours 24 --granularity 15m 
 | `--lookback-hours` | number | No | `24` | — | Min: 1, Max: 2160 (90 days — OKX data retention limit) |
 | `--granularity` | string | No | `"15m"` | `1m`, `5m`, `15m`, `1H` | Must match candle intervals supported by both OKX CEX and OnchainOS |
 | `--venues` | string[] | No | `["okx-cex","okx-dex"]` | `okx-cex`, `okx-dex` | Must have exactly 2 for history comparison |
-| `--chain` | string | No | `"ethereum"` | See chain reference | Required when one venue is `okx-dex` |
+| `--chain` | string | No | `"ethereum"` | See Supported Chains Table | Required when one venue is `okx-dex` |
 
 #### Return Schema
 
@@ -397,6 +421,29 @@ Extract: last, bidPx, askPx, vol24h, ts
 
 **Important:** OKX returns all values as strings. Parse to float before any calculation.
 
+**`market_get_ticker` — Full Parameter / Return Reference:**
+
+Parameters:
+
+| Param | Required | Default | Type | Description |
+|-------|----------|---------|------|-------------|
+| instId | Yes | — | string | Instrument ID (e.g. `"BTC-USDT"`, `"ETH-USDT-SWAP"`) |
+
+Return Fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| last | string | Last traded price |
+| bidPx | string | Best bid price |
+| askPx | string | Best ask price |
+| open24h | string | Opening price 24 hours ago |
+| high24h | string | 24-hour high |
+| low24h | string | 24-hour low |
+| vol24h | string | 24-hour volume in base currency |
+| ts | string | Data timestamp in milliseconds since epoch |
+
+Rate Limit: 20 requests/second.
+
 For `spread` command with `--size-usd`, also fetch orderbook:
 
 ```
@@ -404,6 +451,61 @@ Tool: market_get_orderbook
 Params: { instId: "{ASSET}-USDT", sz: "20" }
 Extract: bids, asks — walk the book to estimate slippage at trade size
 ```
+
+**`market_get_orderbook` — Full Parameter / Return Reference:**
+
+Parameters:
+
+| Param | Required | Default | Type | Description |
+|-------|----------|---------|------|-------------|
+| instId | Yes | — | string | Instrument ID (e.g. `"BTC-USDT"`) |
+| sz | No | `5` | string | Book depth — number of price levels per side. Max `400`. |
+
+Return Fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| asks | array | Array of ask levels, each `[price, size, num_orders]` (strings) |
+| bids | array | Array of bid levels, each `[price, size, num_orders]` (strings) |
+| ts | string | Snapshot timestamp in milliseconds since epoch |
+
+Each level element:
+
+| Index | Type | Description |
+|-------|------|-------------|
+| [0] | string | Price |
+| [1] | string | Size (quantity at that price) |
+| [2] | string | Number of orders at that price level |
+
+Rate Limit: 20 requests/second.
+
+**`market_get_candles` — Full Parameter / Return Reference (used by `history` command):**
+
+Parameters:
+
+| Param | Required | Default | Type | Description |
+|-------|----------|---------|------|-------------|
+| instId | Yes | — | string | Instrument ID (e.g. `"BTC-USDT"`) |
+| bar | No | `"1m"` | string | Candlestick interval. Enum: `1m`, `5m`, `15m`, `30m`, `1H`, `4H`, `1D`, `1W` |
+| after | No | — | string | Pagination cursor — timestamp in ms. Returns data **before** this time. |
+| before | No | — | string | Pagination cursor — timestamp in ms. Returns data **after** this time. |
+| limit | No | `100` | string | Number of candles to return. Max `100`. |
+
+Return Fields (each candle is an array):
+
+| Index | Field | Type | Description |
+|-------|-------|------|-------------|
+| [0] | ts | string | Candle open timestamp in ms since epoch |
+| [1] | open | string | Open price |
+| [2] | high | string | High price |
+| [3] | low | string | Low price |
+| [4] | close | string | Close price |
+| [5] | vol | string | Volume in contracts (derivatives) or base currency (spot) |
+| [6] | volCcy | string | Volume in currency |
+| [7] | volCcyQuote | string | Volume in quote currency |
+| [8] | confirm | string | `"0"` = incomplete candle, `"1"` = confirmed/closed |
+
+Rate Limit: 20 requests/second.
 
 #### okx-dex
 
@@ -415,6 +517,25 @@ onchainos dex-token search {ASSET} --chains {chain}
 # Pick the result matching the target chain with highest liquidity
 ```
 
+**`dex-token search` — Full Parameter / Return Reference:**
+
+Parameters:
+
+| Param | Required | Default | Type | Description |
+|-------|----------|---------|------|-------------|
+| query | Yes | — | string | Search term — token name or symbol (positional argument) |
+| --chains | No | all | string | Comma-separated chain filter (e.g. `ethereum,solana`) |
+
+Return Fields (array of matching tokens):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| address | string | Token contract address |
+| symbol | string | Token symbol |
+| name | string | Full token name |
+| chain | string | Chain the token is on |
+| decimals | number | Token decimal places |
+
 Step B — Fetch price:
 
 ```bash
@@ -422,7 +543,24 @@ onchainos dex-market price --chain {chain} --token {address}
 # Extract: priceUsd, volume24h
 ```
 
-**Note:** For native tokens (ETH, SOL, BNB, etc.), use the native address from `references/chain-reference.md` directly — skip the search step.
+**`dex-market price` — Full Parameter / Return Reference:**
+
+Parameters:
+
+| Param | Required | Default | Type | Description |
+|-------|----------|---------|------|-------------|
+| --chain | Yes | — | string | Chain name (e.g. `ethereum`, `solana`, `base`) |
+| --token | Yes | — | string | Token contract address. Use native address for chain native tokens. |
+
+Return Fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| price | string | Token price in native chain currency |
+| priceUsd | string | Token price in USD |
+| volume24h | string | 24-hour trading volume in USD |
+
+**Note:** For native tokens (ETH, SOL, BNB, etc.), use the native address from the Supported Chains Table below directly — skip the search step.
 
 Native address quick reference:
 - EVM chains: `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee`
@@ -448,7 +586,33 @@ CoinGecko asset IDs: `bitcoin`, `ethereum`, `solana`, `binancecoin`, etc. Map fr
    spread_bps = abs(price_a - price_b) / min(price_a, price_b) * 10000
    ```
 
-   Reference: `references/formulas.md` Section 1 — CEX-DEX Spread.
+   **Spread Formula — Full Definition and Worked Example:**
+
+   ```
+   spread_bps = abs(cex_price - dex_price) / min(cex_price, dex_price) * 10000
+   ```
+
+   | Variable | Definition |
+   |----------|-----------|
+   | `cex_price` | Mid-price on CEX orderbook (OKX), or best bid/ask depending on direction |
+   | `dex_price` | Quote price returned by DEX aggregator for the given size |
+   | `spread_bps` | Unsigned spread in basis points (1 bp = 0.01%) |
+
+   **Worked Example:**
+
+   ```
+   cex_price = 3,412.50  (ETH-USDT mid on OKX)
+   dex_price = 3,419.80  (Jupiter quote, selling ETH for USDT on Solana)
+
+   spread_bps = abs(3412.50 - 3419.80) / min(3412.50, 3419.80) * 10000
+              = 7.30 / 3412.50 * 10000
+              = 21.4 bps
+   ```
+
+   **Caveats:**
+   - Always use the same quote direction (both buy or both sell) for a fair comparison.
+   - DEX price already includes DEX protocol fee and price impact for the quoted size.
+   - CEX price should use bid for sell, ask for buy — not mid — when evaluating executable spread.
 
 3. **Check staleness** — For each venue, compute `data_age_ms = Date.now() - venue_timestamp`:
    - `analysis` mode: WARN if > 30s, BLOCK if > 60s
@@ -462,11 +626,75 @@ CoinGecko asset IDs: `bitcoin`, `ethereum`, `solana`, `binancecoin`, etc. Map fr
 
 ### Step 4: Format Output & Suggest Next Steps
 
-Use the output template from `references/output-templates.md`:
+Use these output templates:
 
-- **Header:** Global Header Template with skill icon and mode
-- **Body:** Price table with venue comparison
-- **Footer:** Next Steps Template
+**Global Header Template:**
+
+```
+══════════════════════════════════════════
+  {SKILL_NAME} — {MODE}
+  [{DEMO_OR_LIVE}] [RECOMMENDATION ONLY — 不會自動執行]
+══════════════════════════════════════════
+  Generated: {YYYY-MM-DD HH:MM UTC}
+  Data sources: {DATA_SOURCES}
+══════════════════════════════════════════
+```
+
+**Monitor Alert Template:**
+
+```
+══════════════════════════════════════════
+  ALERT: {ALERT_TYPE}
+  {TIMESTAMP}
+══════════════════════════════════════════
+
+  {ALERT_HEADLINE}
+
+  ├─ Metric:     {METRIC_NAME}: {METRIC_VALUE}
+  ├─ Threshold:  {THRESHOLD}
+  ├─ Previous:   {PREV_VALUE} ({CHANGE})
+  └─ Action:     {SUGGESTED_ACTION}
+
+  ── Quick Evaluate ────────────────────────
+  {EVALUATE_COMMAND}
+══════════════════════════════════════════
+```
+
+**Next Steps Template:**
+
+```
+══════════════════════════════════════════
+  Next Steps
+══════════════════════════════════════════
+
+  {STEP_1}
+  {STEP_2}
+  {STEP_3}
+
+  ── Related Commands ──────────────────────
+  {CMD_1}
+  {CMD_2}
+  {CMD_3}
+
+  ── Disclaimer ────────────────────────────
+  This is analysis only. No trades are executed automatically.
+  All recommendations require manual review and execution.
+  Past spreads/yields do not guarantee future results.
+  以上僅為分析建議，不會自動執行任何交易。
+  所有建議均需人工審核後手動操作。
+══════════════════════════════════════════
+```
+
+**Formatting Rules:**
+
+| Item | Format |
+|------|--------|
+| Monetary values | `$12,345.67`, `+$1,234.56`, `-$89.10` (2 decimal places, comma thousands) |
+| Percentages | `12.5%` (1 decimal place) |
+| Basis points | Integer only: `21 bps`, `145 bps` |
+| Risk levels | `[SAFE]`, `[WARN]`, `[BLOCK]` |
+| Sparklines | Characters: `▁▂▃▄▅▆▇█` (8-24 data points) |
+| Timestamps | `YYYY-MM-DD HH:MM UTC` |
 
 Suggested follow-up actions (vary by spread magnitude):
 
@@ -490,6 +718,13 @@ Suggested follow-up actions (vary by spread magnitude):
 | 6 | Rate limiting | OKX API returns 429 or rate limit error | Wait 1s, retry up to 3 times. If still failing, output `RATE_LIMITED`. |
 | 7 | CEX instrument validity | `market_get_ticker` returns error for instId | BLOCK for that asset — output `INSTRUMENT_NOT_FOUND`. Suggest checking the symbol. |
 
+**Staleness Thresholds (from Pre-Trade Safety Checklist):**
+
+| Mode | WARN Threshold | BLOCK Threshold |
+|------|---------------|----------------|
+| Analysis (default) | > 30s stale | > 60s stale |
+| Arbitrage (`arb`) | > 3s stale | > 5s stale |
+
 ---
 
 ## 10. Error Codes & Recovery
@@ -503,6 +738,8 @@ Suggested follow-up actions (vary by spread magnitude):
 | `PRICE_ANOMALY` | CEX vs DEX price differs by > 50% | {asset} 的 CEX 與 DEX 價格差異異常大（{spread}%），可能是代幣地址解析錯誤或 DEX 流動性極低。已排除此資產。 | Verify token address is correct. Check DEX liquidity via `dex-token price-info`. |
 | `INSTRUMENT_NOT_FOUND` | OKX CEX does not list this instrument | OKX 上找不到 {instId} 交易對。請確認資產代號是否正確。 | Suggest similar instruments. Check if the asset is listed on OKX. |
 | `RATE_LIMITED` | API rate limit hit after 3 retries | API 請求頻率超限。請稍候 {wait} 秒後重試。 | Exponential backoff: 1s, 2s, 4s. After 3 failures, surface error. |
+| `AUTH_FAILED` | API key invalid or expired | API 認證失敗，請檢查 OKX API 金鑰設定。 | Update `~/.okx/config.toml`. |
+| `SECURITY_BLOCKED` | GoPlus check failed (honeypot, tax, ownership) | 安全檢查未通過：{reason}。此代幣存在風險，不建議操作。 | Do not proceed. Show specific GoPlus findings. |
 
 ---
 
@@ -799,7 +1036,63 @@ Per cycle (every 15s):
 
 ---
 
-## 13. Implementation Notes
+## 13. Supported Chains Table
+
+| Chain | chainIndex (OKX) | Native Token | Native Token Address (DEX) | RPC Unit | Block Time | Explorer |
+|-------|------------------|-------------|---------------------------|----------|------------|----------|
+| Ethereum | 1 | ETH | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` | gwei | ~12s | etherscan.io |
+| BSC | 56 | BNB | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` | gwei | ~3s | bscscan.com |
+| Polygon | 137 | MATIC | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` | gwei | ~2s | polygonscan.com |
+| Arbitrum One | 42161 | ETH | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` | gwei | ~0.25s | arbiscan.io |
+| Optimism | 10 | ETH | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` | gwei | ~2s | optimistic.etherscan.io |
+| Base | 8453 | ETH | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` | gwei | ~2s | basescan.org |
+| Avalanche C-Chain | 43114 | AVAX | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` | nAVAX | ~2s | snowscan.xyz |
+| Solana | 501 | SOL | `11111111111111111111111111111111` | lamports | ~0.4s | solscan.io |
+| X Layer | 196 | OKB | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` | gwei | ~3s | oklink.com/xlayer |
+
+### Critical Warnings
+
+**Solana Native Token Address:**
+
+```
+CORRECT:   11111111111111111111111111111111
+WRONG:     So11111111111111111111111111111111111111112  (this is wSOL, the wrapped version)
+```
+
+- Use `11111111111111111111111111111111` (the System Program ID) when referring to native SOL in OKX DEX API calls.
+- `So11111111111111111111111111111111111111112` is Wrapped SOL (wSOL) — a different asset used within DeFi protocols.
+- When the OKX DEX API returns a quote involving native SOL, it uses the system program address.
+
+**EVM Native Token Address:**
+
+All EVM-compatible chains use the same placeholder address for native tokens:
+
+```
+0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+```
+
+This is a convention, not a real contract address. Applies to: ETH (Ethereum, Arbitrum, Optimism, Base), BNB (BSC), MATIC (Polygon), AVAX (Avalanche), OKB (X Layer).
+
+**Address Formatting:**
+- **EVM chains**: Contract addresses **must be lowercase** (checksummed addresses also accepted by most APIs, but prefer lowercase for consistency).
+- **Solana**: Addresses are **base58-encoded** and **case-sensitive**. Do not modify case.
+
+**Chain-Specific Gotchas:**
+
+| Chain | Gotcha |
+|-------|--------|
+| Ethereum | High gas costs; unsuitable for small arb trades |
+| Arbitrum | Gas limit values are much larger than L1 (1M-2M) but cost is low due to low gas price |
+| Base | Very cheap but liquidity may be thinner for non-major pairs |
+| Optimism | Similar to Base; check liquidity before large trades |
+| Solana | Uses compute units + priority fees, not gas/gwei model |
+| BSC | Fast blocks but more susceptible to MEV/sandwich attacks |
+| Polygon | Gas spikes possible during high activity; use gas oracle |
+| X Layer | OKX native chain; limited DeFi ecosystem compared to others |
+
+---
+
+## 14. Implementation Notes
 
 ### Token Address Resolution Cache
 
@@ -809,7 +1102,7 @@ To avoid redundant `dex-token search` calls within a session, maintain an in-mem
 {ASSET}:{CHAIN} → contract_address
 ```
 
-Pre-populated entries from `references/chain-reference.md`:
+Pre-populated entries from the Supported Chains Table:
 - `ETH:ethereum` → `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee`
 - `ETH:arbitrum` → `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee`
 - `ETH:base` → `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee`
@@ -856,7 +1149,9 @@ Each chain produces a separate venue entry: `okx-dex:ethereum`, `okx-dex:arbitru
 
 ---
 
-## 14. Reference Files
+## 15. Reference Files
+
+**Note:** All content from reference files has been inlined above for OpenClaw/Lark compatibility. The files below exist for human maintenance only.
 
 | File | Relevance to This Skill |
 |------|------------------------|
