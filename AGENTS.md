@@ -15,6 +15,10 @@ When a user request arrives, route to the appropriate skill based on this matrix
 | "我嘅帳戶餘額" / "my balance" | Delegate to okx-trade-mcp directly | - |
 | "比較兩個價格" / "price comparison" | `price-feed-aggregator` | - |
 | "呢個交易賺唔賺" / "is this profitable" | `profitability-calculator` | - |
+| "清算級聯" / "liquidation cascade" / "DeFi 健康因子" | `liquidation-cascade-monitor` | profitability-calculator |
+| "穩定幣脫錨" / "stablecoin depeg" / "USDT 脫鈎" / "Curve 3pool 比例" | `stablecoin-depeg-arbitrage` | profitability-calculator |
+| "LP 對沖" / "LP hedge" / "無常損失" / "delta neutral LP" | `lp-hedge` | profitability-calculator, funding-rate-arbitrage |
+| "跨鏈套利" / "cross-chain arb" / "bridge arbitrage" / "L2 價差" | `cross-chain-arbitrage` | profitability-calculator, price-feed-aggregator |
 
 ## Cross-Skill Workflow Chains
 
@@ -93,6 +97,76 @@ When a user request arrives, route to the appropriate skill based on this matrix
    │  → Signal decay check, actionability
    ▼
 4. Output: Signals with [CAUTION] + REQUIRES HUMAN APPROVAL
+```
+
+### Chain F: Liquidation Cascade Monitoring
+
+```
+1. liquidation-cascade-monitor.scan
+   │  → DeFiLlama liquidation data + Aave/Compound health factors
+   │  → Identifies positions with health_factor < 1.10
+   ▼
+2. liquidation-cascade-monitor.evaluate
+   │  → Calculates cascade_impact = liquidatable_usd / market_depth
+   │  → Checks OKX perp availability for affected token
+   ▼
+3. profitability-calculator.estimate
+   │  → Entry/exit cost for CEX perp position
+   ▼
+4. Output: Cascade risk assessment with CEX short recommendation
+```
+
+### Chain G: Stablecoin Depeg Arbitrage
+
+```
+1. stablecoin-depeg-arbitrage.scan
+   │  → CEX stablecoin prices + Curve 3pool ratios
+   │  → Identifies deviations > 0.5%
+   ▼
+2. stablecoin-depeg-arbitrage.evaluate
+   │  → Solvency vs liquidity depeg classification (CRITICAL)
+   │  → GoPlus contract safety check
+   ▼
+3. profitability-calculator.estimate
+   │  → Net P&L after CEX fees + gas + slippage
+   ▼
+4. Output: Depeg arb opportunity with solvency safety label
+```
+
+### Chain H: LP Hedge (Delta-Neutral Yield Farming)
+
+```
+1. lp-hedge.scan
+   │  → DeFiLlama pool data with APY > 30%
+   │  → Filters for OKX-hedgeable assets
+   ▼
+2. lp-hedge.hedge-calc
+   │  → Delta calculation (V2: 0.5, V3: 0.6-0.8)
+   │  → OKX funding rate for hedge cost
+   ▼
+3. lp-hedge.evaluate
+   │  → Net yield = fees + incentives - IL - funding - rebalance
+   │  → GoPlus LP token check
+   ▼
+4. Output: Ranked hedged LP opportunities with net yield
+```
+
+### Chain I: Cross-Chain Arbitrage
+
+```
+1. cross-chain-arbitrage.scan
+   │  → OnchainOS prices on multiple chains
+   │  → Identifies cross-chain spread > 100 bps
+   ▼
+2. cross-chain-arbitrage.bridge-compare
+   │  → Bridge fee/speed comparison (Across, Stargate, Synapse)
+   │  → Bridge security assessment
+   ▼
+3. cross-chain-arbitrage.evaluate
+   │  → All-in cost: gas + bridge + slippage + hedge
+   │  → CEX transit hedge sizing
+   ▼
+4. Output: Cross-chain arb with bridge route + hedge plan
 ```
 
 ## Data Handoff Conventions

@@ -20,6 +20,10 @@ Onchain 與中心化交易所 (CEX) 協同交易策略技能包。提供 CEX-DEX
 | `basis-trading` | 現貨-期貨基差捕獲 | scan, evaluate, curve, track, roll |
 | `yield-optimizer` | CEX 借貸 vs DeFi 收益比較與優化 | scan, evaluate, compare, rebalance, rates-snapshot |
 | `smart-money-tracker` | 鏈上聰明錢追蹤與信號評估 | scan, track-wallet, evaluate, leaderboard, copy-plan |
+| `liquidation-cascade-monitor` | DeFi 清算級聯偵測 → CEX 永續合約定位 | scan, evaluate, monitor, cascade-alert |
+| `stablecoin-depeg-arbitrage` | 穩定幣脫錨套利 (CEX↔DEX) | scan, evaluate, monitor, curve-ratio |
+| `lp-hedge` | LP 做市 + CEX 永續合約 Delta 中性對沖 | scan, evaluate, hedge-calc, rebalance-check |
+| `cross-chain-arbitrage` | 跨鏈價差套利 + CEX 橋接對沖 | scan, evaluate, bridge-compare, transit-hedge |
 
 ## MCP Servers Required
 
