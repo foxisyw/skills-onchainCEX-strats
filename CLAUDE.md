@@ -1,76 +1,63 @@
-# Onchain x CEX Synergy Trading Skills
+# Arb-Only CEX-DEX Skills
 
-Onchain 與中心化交易所 (CEX) 協同交易策略技能包。提供 CEX-DEX 套利、資金費率套利、基差交易、收益優化及聰明錢追蹤等分析與建議功能。
+OpenClaw skill bundle for retail-focused CEX-vs-DEX arbitrage analysis using OKX market data and OnchainOS liquidity data.
 
 ## Core Principles
 
-1. **Analysis only** — 所有 skills 僅提供分析與建議，不會自動執行交易
-2. **Security first** — 每筆建議均經過 GoPlus 安全檢查、流動性驗證、成本分析
-3. **Demo default** — 預設使用模擬帳戶 (`okx-DEMO-simulated-trading`)，切換真實帳戶需用戶明確確認
-4. **No wheel reinvention** — 安全檢查委託 GoPlus MCP / MistTrack MCP，不自建
+1. **Analysis only** — no trades, transfers, approvals, or signed transactions.
+2. **Retail-first clarity** — the flagship flow answers whether the user can execute now.
+3. **Read-only by default** — shipped MCP config exposes only read paths.
+4. **Conservative assumptions** — no dual-side inventory, no hedge, 10-minute transfer tolerance unless the user says otherwise.
+5. **Trust-gated output** — non-native tokens use GoPlus when available; otherwise results are explicitly labeled `UNCHECKED`.
 
-## Skills
+## Shipped Skills
 
 | Skill | Purpose | Key Commands |
 |-------|---------|-------------|
-| `price-feed-aggregator` | CEX + DEX 統一價格快照、價差偵測 | snapshot, spread, monitor, history |
-| `profitability-calculator` | 扣除所有成本後的淨盈利計算 | estimate, breakdown, min-spread, sensitivity |
-| `cex-dex-arbitrage` | CEX vs DEX 價差套利機會偵測與評估 | scan, evaluate, monitor, backtest |
-| `funding-rate-arbitrage` | 資金費率差異套利 / Carry Trade | scan, evaluate, rates, carry-pnl, unwind-check |
-| `basis-trading` | 現貨-期貨基差捕獲 | scan, evaluate, curve, track, roll |
-| `yield-optimizer` | CEX 借貸 vs DeFi 收益比較與優化 | scan, evaluate, compare, rebalance, rates-snapshot |
-| `smart-money-tracker` | 鏈上聰明錢追蹤與信號評估 | scan, track-wallet, evaluate, leaderboard, copy-plan |
-| `liquidation-cascade-monitor` | DeFi 清算級聯偵測 → CEX 永續合約定位 | scan, evaluate, monitor, cascade-alert |
-| `stablecoin-depeg-arbitrage` | 穩定幣脫錨套利 (CEX↔DEX) | scan, evaluate, monitor, curve-ratio |
-| `lp-hedge` | LP 做市 + CEX 永續合約 Delta 中性對沖 | scan, evaluate, hedge-calc, rebalance-check |
-| `cross-chain-arbitrage` | 跨鏈價差套利 + CEX 橋接對沖 | scan, evaluate, bridge-compare, transit-hedge |
+| `cex-dex-arbitrage` | Retail orchestrator for readiness, spread scanning, and single-opportunity evaluation | `doctor`, `scan`, `evaluate`, `monitor`, `backtest` |
+| `price-feed-aggregator` | Spread detection and synchronized CEX/DEX snapshots | `snapshot`, `spread`, `monitor`, `history` |
+| `profitability-calculator` | Cost and breakeven engine for arbitrage scenarios | `estimate`, `breakdown`, `min-spread`, `sensitivity` |
+| `non-atomic-execution-risk-model` | Fill risk and worst-case loss modeling | `assess`, `stress` |
+| `mev-protected-dex-execution-plan` | Mempool route comparison for EVM DEX execution | `plan`, `compare` |
 
-## MCP Servers Required
+## Runtime Dependencies
 
-| Server | Purpose | Config |
-|--------|---------|--------|
-| `okx-trade-mcp` | OKX CEX 數據 | `~/.okx/config.toml` |
-| OnchainOS CLI | OKX DEX 數據 | `npx skills add okx/onchainos-skills` |
-| GoPlus MCP | 代幣安全檢查 | `GOPLUS_API_KEY` env var |
-| CoinGecko MCP | 市場數據備份 | `COINGECKO_API_KEY` env var (optional) |
-| DeFiLlama MCP | TVL / 收益數據 | No key needed |
+| Dependency | Required | Notes |
+|------------|----------|-------|
+| `okx-trade-mcp` | Yes | Demo/live entries are read-only |
+| OnchainOS CLI | Yes | Mandatory for DEX prices, quotes, gas, liquidity |
+| GoPlus MCP | Optional | Needed for non-native token contract-risk checks |
 
-See `config/mcp-setup-guide.md` for step-by-step setup instructions.
+## Default User Journey
 
-## Safety Architecture
+1. Run `cex-dex-arbitrage doctor`
+2. Run `cex-dex-arbitrage scan`
+3. Run `cex-dex-arbitrage evaluate`
 
-All recommendations pass through 5 safety layers:
-1. **Per-skill guardrails** — liquidity, slippage, gas, staleness thresholds
-2. **Token/contract security** — GoPlus honeypot, rug pull, tax rate checks
-3. **Position & loss limits** — from `config/risk-limits.example.yaml`
-4. **Account safety** — Demo default, `[DEMO]`/`[LIVE]` headers
-5. **Recommendation safety** — `[RECOMMENDATION ONLY]` header, no auto-execution
+## Retail Status Vocabulary
 
-## Output Format
+- `SETUP_BLOCKED`
+- `READY_NOW`
+- `NEEDS_INVENTORY`
+- `NEEDS_HEDGE`
+- `MARGINAL`
+- `DO_NOT_TRADE`
 
-All skill outputs follow standardized formatting:
-- Headers: `[DEMO] [RECOMMENDATION ONLY — 不會自動執行]`
-- Monetary: `±$X,XXX.XX` (2 decimals, comma thousands)
-- Percentages: `XX.X%` (1 decimal)
-- Risk levels: `[SAFE]` `[WARN]` `[BLOCK]`
-- Risk gauge: `▓░` blocks (scale 1-10)
-- Tables: Markdown pipe format
-- See `references/output-templates.md` for full templates
+## Output Contract
 
-## Language
+Every flagship result must show:
 
-Match user's language. Default: Traditional Chinese (繁體中文).
-Metric labels may use English abbreviations (PnL, APY, bps) regardless of language.
+- `[DEMO]` or `[LIVE]`
+- `[RECOMMENDATION ONLY — 不會自動執行]`
+- `Executable now?`
+- `Required setup`
+- `Estimated completion time`
+- `Worst-case loss`
+- `Recommendation`
 
-## Reference Files
+## Documentation
 
-| File | Contents |
-|------|----------|
-| `references/formulas.md` | All calculation formulas |
-| `references/fee-schedule.md` | OKX fee tiers, gas benchmarks |
-| `references/mcp-tools.md` | okx-trade-mcp tool reference |
-| `references/onchainos-tools.md` | OnchainOS CLI command reference |
-| `references/goplus-tools.md` | GoPlus MCP tool reference |
-| `references/safety-checks.md` | Security check procedures |
-| `references/chain-reference.md` | Chains, IDs, native addresses |
-| `references/output-templates.md` | Output format templates |
+- [README.md](/Users/stevensze/Documents/AI%20%26%20Projects/Tool%20:%20Prototype/CEX%20SKILLS/Onchain%20x%20CEX%20Strats/README.md)
+- [config/mcp-setup-guide.md](/Users/stevensze/Documents/AI%20%26%20Projects/Tool%20:%20Prototype/CEX%20SKILLS/Onchain%20x%20CEX%20Strats/config/mcp-setup-guide.md)
+- [config/risk-limits.example.yaml](/Users/stevensze/Documents/AI%20%26%20Projects/Tool%20:%20Prototype/CEX%20SKILLS/Onchain%20x%20CEX%20Strats/config/risk-limits.example.yaml)
+- [references/output-templates.md](/Users/stevensze/Documents/AI%20%26%20Projects/Tool%20:%20Prototype/CEX%20SKILLS/Onchain%20x%20CEX%20Strats/references/output-templates.md)

@@ -2,25 +2,16 @@
   "mcpServers": {
     "okx-DEMO-simulated-trading": {
       "command": "okx-trade-mcp",
-      "args": ["--profile", "demo", "--modules", "account,swap,spot,market,system"]
+      "args": ["--profile", "demo", "--modules", "account,swap,spot,market,system", "--read-only"]
     },
     "okx-LIVE-real-money": {
       "command": "okx-trade-mcp",
-      "args": ["--profile", "live", "--modules", "account,swap,spot,market,system"]
+      "args": ["--profile", "live", "--modules", "account,swap,spot,market,system", "--read-only"]
     },
     "goplus-security": {
       "command": "npx",
       "args": ["-y", "goplus-mcp"],
       "env": { "GOPLUS_API_KEY": "${GOPLUS_API_KEY}" }
-    },
-    "coingecko": {
-      "command": "npx",
-      "args": ["-y", "@coingecko/coingecko-mcp"],
-      "env": { "COINGECKO_API_KEY": "${COINGECKO_API_KEY}" }
-    },
-    "defillama": {
-      "command": "npx",
-      "args": ["-y", "mcp-defillama"]
     }
   }
 }
